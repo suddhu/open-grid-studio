@@ -63,11 +63,84 @@ function selectColor(c) {
 }
 selectColor(color);
 
+// ---- board-edge widget ------------------------------------------------------
+// Per-corner / per-edge booleans are shown as a clickable top-down board diagram
+// instead of eight checkboxes. Maps widget positions to Customizer variable names.
+const SPATIAL = {
+  corners: { TL: "Chamfer_Top_Left", TR: "Chamfer_Top_Right", BL: "Chamfer_Bottom_Left", BR: "Chamfer_Bottom_Right" },
+  edges: { T: "Connector_Holes_Top", B: "Connector_Holes_Bottom", L: "Connector_Holes_Left", R: "Connector_Holes_Right" },
+};
+let syncBoardWidget = () => {};
+const SPATIAL_NAMES = new Set([...Object.values(SPATIAL.corners), ...Object.values(SPATIAL.edges)]);
+
+function buildBoardWidget() {
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+  const wrap = document.createElement("div");
+  wrap.className = "board-widget";
+  const svg = el("svg", { viewBox: "0 0 120 120", role: "group", "aria-label": "Board corners and edges" });
+  svg.appendChild(el("rect", { x: 14, y: 14, width: 92, height: 92, rx: 6, class: "board" }));
+  // faint grid lines so it reads as an openGrid tile
+  for (let i = 1; i < 4; i++) {
+    svg.appendChild(el("line", { x1: 14 + i * 23, y1: 14, x2: 14 + i * 23, y2: 106, class: "grid" }));
+    svg.appendChild(el("line", { x1: 14, y1: 14 + i * 23, x2: 106, y2: 14 + i * 23, class: "grid" }));
+  }
+  const buttons = [];
+  const add = (shape, name, label) => {
+    shape.classList.add("hit");
+    shape.setAttribute("tabindex", "0");
+    shape.setAttribute("role", "checkbox");
+    shape.setAttribute("aria-label", label);
+    const title = el("title", {}); title.textContent = label; shape.appendChild(title);
+    const toggle = () => { values[name] = !values[name]; sync(); scheduleRender(); };
+    shape.addEventListener("click", toggle);
+    shape.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); } });
+    buttons.push([shape, name]);
+    svg.appendChild(shape);
+    setters[name] = (v) => { values[name] = v; sync(); };
+  };
+  // edges: connector holes (pills along each side)
+  add(el("rect", { x: 34, y: 6, width: 52, height: 12, rx: 6 }), SPATIAL.edges.T, "Connector holes: top edge");
+  add(el("rect", { x: 34, y: 102, width: 52, height: 12, rx: 6 }), SPATIAL.edges.B, "Connector holes: bottom edge");
+  add(el("rect", { x: 6, y: 34, width: 12, height: 52, rx: 6 }), SPATIAL.edges.L, "Connector holes: left edge");
+  add(el("rect", { x: 102, y: 34, width: 12, height: 52, rx: 6 }), SPATIAL.edges.R, "Connector holes: right edge");
+  // corners: chamfers (diagonal-cut squares)
+  const corner = (cx, cy) => el("circle", { cx, cy, r: 9 });
+  add(corner(14, 14), SPATIAL.corners.TL, "Chamfer: top-left corner");
+  add(corner(106, 14), SPATIAL.corners.TR, "Chamfer: top-right corner");
+  add(corner(14, 106), SPATIAL.corners.BL, "Chamfer: bottom-left corner");
+  add(corner(106, 106), SPATIAL.corners.BR, "Chamfer: bottom-right corner");
+  const edgeNames = new Set(Object.values(SPATIAL.edges));
+  function sync() {
+    const edgesOn = values.Connector_Holes !== false;
+    const cornersOn = values.Chamfers !== "None";
+    for (const [shape, name] of buttons) {
+      shape.classList.toggle("on", !!values[name]);
+      shape.classList.toggle("off", edgeNames.has(name) ? !edgesOn : !cornersOn);
+      shape.setAttribute("aria-checked", String(!!values[name]));
+    }
+  }
+  sync();
+  syncBoardWidget = sync;
+  wrap.appendChild(svg);
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  legend.innerHTML = '<span><i class="sw corner"></i> corner chamfer</span><span><i class="sw edge"></i> edge connector holes</span>';
+  wrap.appendChild(legend);
+  return wrap;
+}
+
 // ---- parameter form ---------------------------------------------------------
 function buildForm() {
   const form = $("params");
   let group = null;
+  let widgetPlaced = false;
   for (const p of params) {
+    if (SPATIAL_NAMES.has(p.name)) {
+      // First per-corner/edge variable: put the board diagram here, skip the checkboxes.
+      if (!widgetPlaced) { form.appendChild(buildBoardWidget()); widgetPlaced = true; }
+      continue;
+    }
     if (p.group !== group) {
       group = p.group;
       const h = document.createElement("h2");
@@ -81,7 +154,7 @@ function buildForm() {
     label.htmlFor = p.name;
     field.appendChild(label);
 
-    const set = (v) => { values[p.name] = v; scheduleRender(); };
+    const set = (v) => { values[p.name] = v; syncBoardWidget(); scheduleRender(); };
     if (p.type === "bool") {
       const cb = Object.assign(document.createElement("input"), { type: "checkbox", id: p.name, checked: p.value });
       cb.onchange = () => set(cb.checked);
