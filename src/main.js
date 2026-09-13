@@ -209,6 +209,7 @@ function render() {
   inFlight = true;
   const id = ++renderId;
   setStatus("Rendering…");
+  $("spinner").hidden = false;
   $("export").disabled = true;
   worker.postMessage({ id, source, defineArgs: toDefineArgs(values) });
 }
@@ -216,6 +217,7 @@ function render() {
 worker.onmessage = ({ data }) => {
   inFlight = false;
   if (pending) { pending = false; render(); return; }
+  $("spinner").hidden = true;
   if (data.id !== renderId) return; // stale result
   $("log").textContent = data.log.join("\n");
   if (data.error) {
