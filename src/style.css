@@ -9,7 +9,6 @@ h1 { font-size:16px; margin:0 0 10px; }
 button { flex:1; padding:8px 10px; border-radius:6px; border:1px solid var(--line); background:#26282f; color:var(--fg); cursor:pointer; font:inherit; }
 button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
 button:disabled { opacity:.45; cursor:default; }
-.auto { display:block; margin-top:8px; color:var(--muted); font-size:12px; }
 .printer { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--muted); }
 .printer select { flex:1; padding:4px 6px; border-radius:4px; border:1px solid var(--line); background:#111216; color:var(--fg); font:inherit; }
 #params { flex:1; overflow:auto; padding:8px 16px 16px; }

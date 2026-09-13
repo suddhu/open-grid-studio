@@ -197,7 +197,6 @@ function buildForm() {
 // ---- rendering --------------------------------------------------------------
 let debounce;
 function scheduleRender() {
-  if (!$("auto").checked) return;
   clearTimeout(debounce);
   debounce = setTimeout(render, 250);
 }
@@ -210,7 +209,7 @@ function render() {
   inFlight = true;
   const id = ++renderId;
   setStatus("Rendering…");
-  $("render").disabled = true;
+  $("export").disabled = true;
   worker.postMessage({ id, source, defineArgs: toDefineArgs(values) });
 }
 
@@ -218,7 +217,6 @@ worker.onmessage = ({ data }) => {
   inFlight = false;
   if (pending) { pending = false; render(); return; }
   if (data.id !== renderId) return; // stale result
-  $("render").disabled = false;
   $("log").textContent = data.log.join("\n");
   if (data.error) {
     setStatus(`Render failed: ${data.error}`, true);
@@ -266,6 +264,5 @@ $("export").onclick = async () => {
   }
 };
 
-$("render").onclick = render;
 buildForm();
 fitToPlate();
