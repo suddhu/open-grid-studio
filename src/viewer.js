@@ -108,7 +108,14 @@ export function createViewer(container) {
     renderer.render(gizmoScene, gizmoCamera);
   })();
 
-  return { setStl, setBed, refit: () => mesh && frame(mesh.geometry.boundingBox) };
+  function setColor(hex) {
+    material.color.set(hex);
+    // Very dark filaments would render as a silhouette; lift the shaded color slightly.
+    const hsl = {}; material.color.getHSL(hsl);
+    if (hsl.l < 0.08) material.color.setHSL(hsl.h, hsl.s, 0.08);
+  }
+
+  return { setStl, setBed, setColor, refit: () => mesh && frame(mesh.geometry.boundingBox) };
 }
 
 // Three colored axis lines with text labels; depthTest off so they show through geometry.

@@ -1,6 +1,7 @@
 import { parseCustomizer, toDefineArgs } from "./customizer.js";
 import { createViewer } from "./viewer.js";
 import { PRINTERS } from "./printers.js";
+import { FILAMENT_COLORS } from "./colors.js";
 import source from "../scad/opengrid_tile.scad?raw";
 
 const $ = (id) => document.getElementById(id);
@@ -33,6 +34,31 @@ function fitToPlate() {
   setters.Rows?.(Math.max(1, Math.floor(h / 28)));
   render();
 }
+
+// ---- filament color swatches ------------------------------------------------
+const COLOR_KEY = "opengrid.color";
+let saved = null;
+try { saved = localStorage.getItem(COLOR_KEY); } catch {}
+let color = FILAMENT_COLORS.find((c) => c.code === saved) || FILAMENT_COLORS.find((c) => c.name === "Pumpkin Orange");
+const swatches = $("colors");
+for (const c of FILAMENT_COLORS) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "swatch";
+  b.style.background = c.hex;
+  b.title = `${c.name} (${c.code})`;
+  b.setAttribute("aria-label", c.name);
+  b.onclick = () => selectColor(c);
+  swatches.appendChild(b);
+}
+function selectColor(c) {
+  color = c;
+  viewer.setColor(c.hex);
+  $("colorName").textContent = `${c.name} · ${c.code}`;
+  for (const b of swatches.children) b.classList.toggle("selected", b.title.startsWith(c.name + " ("));
+  try { localStorage.setItem(COLOR_KEY, c.code); } catch {}
+}
+selectColor(color);
 
 // ---- parameter form ---------------------------------------------------------
 function buildForm() {
