@@ -20,4 +20,4 @@ npm run dev        # → http://localhost:3000
 | Preview | `src/viewer.js` | three.js + OrbitControls + STLLoader. |
 | Export | `server.mjs` | `POST /api/export` writes `exports/<name>.stl` and runs `open -a BambuStudio <file>`. Set `BAMBU_APP` if your app name differs. |
 
-The lattice wall/lip profile is an approximation of openGrid, not the official spec.
+The cell profile is derived from the mating snap in the official [openGrid-openSCAD](https://github.com/openGrid-3D/openGrid-openSCAD) repo (monokini grip: 25.0 mm tip, 26.4 mm catch at 0.4-1.0 mm depth, 3.4 mm insertion). That repo has no tile generator yet, so this is verified against the snap, not an official tile file.

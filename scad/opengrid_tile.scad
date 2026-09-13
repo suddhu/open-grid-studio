@@ -1,6 +1,6 @@
 // openGrid-style tile generator (simplified, from scratch)
 // Grid pitch 28 mm. Full board 6.8 mm, Lite board 4 mm (per opengrid.world docs).
-// Wall/lip profile is an approximation, not the official spec.
+// Cell profile derived from the official openGrid snap geometry (see [Hidden] section).
 
 /* [Board] */
 // Full (6.8 mm, two-sided) or Lite (4 mm, one-sided)
@@ -21,33 +21,40 @@ Countersink_Diameter = 6.5; // [3:0.1:12]
 Screw_Spacing = 2; // [1:1:8]
 
 /* [Hidden] */
-// Lattice profile constants (approximation of the openGrid wall/lip shape)
-Wall = 0.8;          // wall contributed by each tile edge (wall between cells = 1.6)
-Lip = 1.0;           // how far the front/back lip protrudes into the cell
-Lip_Chamfer = 1.2;   // chamfer height of the lip
-Post = 4.2;          // side length of solid posts at lattice intersections
+// Cell profile derived from the official openGrid snap (openGrid-3D/openGrid-openSCAD,
+// monokini grip): 3.4 mm insertion, 26.4 mm catch bump at 0.4-1.0 mm depth, 25.0 mm tip.
+Wall = 0.8;            // wall contributed by each tile edge -> 26.4 mm max opening
+Face_Opening = 25.0;   // opening at the tile face (the lip the snap catches on)
+Top_Chamfer = 0.4;     // face lip chamfer: 25.0 -> 26.4 over 0.4 mm
+Capture_Depth = 2.4;   // 26.4 mm capture zone extends to this depth
+Mid_Chamfer = 1.0;     // closes 26.4 -> 25.0 over 1.0 mm, reaching 25.0 at 3.4 mm depth
+Snap_Depth = Capture_Depth + Mid_Chamfer; // 3.4
+Post = 4.2;            // side length of solid posts at lattice intersections
 $fn = 32;
 pitch = 28;
 T = (Tile_Type == "Full") ? 6.8 : 4;
 eps = 0.01;
 
+// One snap-side of the cell profile: face at z = 0, growing in +z into the tile.
+// Convex (narrow-wide-narrow), so hull works.
+module snap_barrel() {
+    wide = pitch - 2 * Wall;
+    hull() {
+        translate([0, 0, -eps])                   linear_extrude(eps) square(Face_Opening, center = true);
+        translate([0, 0, Top_Chamfer])            linear_extrude(Capture_Depth - Top_Chamfer) square(wide, center = true);
+        translate([0, 0, Snap_Depth - eps])       linear_extrude(eps) square(Face_Opening, center = true);
+    }
+}
+
 module cell_cutter() {
-    // Cross-section: narrow at faces (lip), wide in the middle. Convex, so hull works.
-    wide   = pitch - 2 * Wall;
-    narrow = wide - 2 * Lip;
     if (Tile_Type == "Full") {
-        hull() {
-            translate([0, 0, -eps])            linear_extrude(eps)  square(narrow, center = true);
-            translate([0, 0, Lip_Chamfer])     linear_extrude(T - 2 * Lip_Chamfer) square(wide, center = true);
-            translate([0, 0, T])               linear_extrude(eps)  square(narrow, center = true);
-        }
+        // Two snap-sides back to back: 2 x 3.4 = 6.8
+        snap_barrel();
+        translate([0, 0, T]) mirror([0, 0, 1]) snap_barrel();
     } else {
-        // Lite: lip on the front (top) face only; back face fully open
-        hull() {
-            translate([0, 0, -eps])            linear_extrude(eps)  square(wide, center = true);
-            translate([0, 0, 0])               linear_extrude(T - Lip_Chamfer) square(wide, center = true);
-            translate([0, 0, T])               linear_extrude(eps)  square(narrow, center = true);
-        }
+        // Lite: snap-side on the front face (z = T); the remaining 0.6 mm at the back is a plain 25.0 opening
+        translate([0, 0, T]) mirror([0, 0, 1]) snap_barrel();
+        translate([0, 0, -eps]) linear_extrude(T - Snap_Depth + 2 * eps) square(Face_Opening, center = true);
     }
 }
 
