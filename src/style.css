@@ -1,0 +1,28 @@
+:root { color-scheme: dark; --bg:#141518; --panel:#1c1d22; --line:#2c2e36; --fg:#e6e6ea; --muted:#8b8d98; --accent:#f28c28; }
+* { box-sizing: border-box; }
+html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; }
+body { display:grid; grid-template-columns: 340px 1fr; height:100vh; }
+#panel { background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+#panel header { padding:14px 16px 10px; border-bottom:1px solid var(--line); }
+h1 { font-size:16px; margin:0 0 10px; }
+.actions { display:flex; gap:8px; }
+button { flex:1; padding:8px 10px; border-radius:6px; border:1px solid var(--line); background:#26282f; color:var(--fg); cursor:pointer; font:inherit; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
+button:disabled { opacity:.45; cursor:default; }
+.auto { display:block; margin-top:8px; color:var(--muted); font-size:12px; }
+.printer { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--muted); }
+.printer select { flex:1; padding:4px 6px; border-radius:4px; border:1px solid var(--line); background:#111216; color:var(--fg); font:inherit; }
+#params { flex:1; overflow:auto; padding:8px 16px 16px; }
+#params h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:16px 0 6px; }
+.field { display:grid; grid-template-columns: 1fr auto; align-items:center; gap:4px 10px; padding:6px 0; }
+.field label { font-size:13px; }
+.field small { grid-column:1 / -1; color:var(--muted); font-size:11px; margin-top:-2px; }
+.field input[type=number], .field input[type=text], .field select { width:90px; padding:4px 6px; border-radius:4px; border:1px solid var(--line); background:#111216; color:var(--fg); font:inherit; }
+.field .range { grid-column:1 / -1; display:flex; gap:8px; align-items:center; }
+.field .range input[type=range] { flex:1; accent-color:var(--accent); }
+#panel footer { border-top:1px solid var(--line); padding:10px 16px; }
+#status { font-size:12px; color:var(--muted); }
+#status.error { color:#ff7a7a; }
+#log { max-height:120px; overflow:auto; font-size:11px; color:var(--muted); margin:6px 0 0; white-space:pre-wrap; }
+#viewer { position:relative; min-width:0; }
+#viewer canvas { display:block; width:100% !important; height:100% !important; }

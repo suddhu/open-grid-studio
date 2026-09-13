@@ -1,0 +1,22 @@
+{
+  "name": "opengrid-tile-studio",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@lofcz/openscad-wasm": "^0.0.2",
+    "express": "^5.2.1",
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.0"
+  },
+  "type": "module",
+  "private": true
+}

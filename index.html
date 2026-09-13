@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>openGrid Tile Studio</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <aside id="panel">
+    <header>
+      <h1>openGrid Tile Studio</h1>
+      <div class="actions">
+        <button id="render" class="primary">Render</button>
+        <button id="export" disabled>Open in Bambu Studio</button>
+      </div>
+      <label class="auto"><input type="checkbox" id="auto" checked /> Auto-render on change</label>
+      <label class="printer">Printer <select id="printer"></select></label>
+    </header>
+    <form id="params"></form>
+    <footer>
+      <div id="status">Loading…</div>
+      <pre id="log"></pre>
+    </footer>
+  </aside>
+  <main id="viewer"></main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
