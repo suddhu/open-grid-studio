@@ -7,6 +7,7 @@ export function parseCustomizer(source) {
   const params = [];
   let group = "Parameters";
   let pendingDesc = "";
+  let pendingDesc0 = "";
   for (const raw of source.split("\n")) {
     const line = raw.trim();
     const g = line.match(/^\/\*\s*\[(.+?)\]\s*\*\/$/);
@@ -16,7 +17,11 @@ export function parseCustomizer(source) {
     const m = line.match(/^([A-Za-z_$][\w$]*)\s*=\s*(.+?);\s*(?:\/\/\s*(.*))?$/);
     if (!m) { if (line !== "") pendingDesc = ""; continue; }
     const [, name, rawValue, annotation = ""] = m;
-    if (name === "$fn") { pendingDesc = ""; continue; } // keep as a code-level constant
+    pendingDesc0 = pendingDesc; pendingDesc = "";
+    if (name === "$fn") continue; // keep as a code-level constant
+    // Like OpenSCAD's Customizer, only literal values are parameters; computed assignments are not.
+    if (!/^(true|false|-?\d+(\.\d+)?|"[^"]*")$/.test(rawValue.trim())) continue;
+    pendingDesc = pendingDesc0;
     const p = { name, group, description: pendingDesc, value: parseValue(rawValue) };
     pendingDesc = "";
     const ann = annotation.trim().match(/^\[(.*)\]$/);

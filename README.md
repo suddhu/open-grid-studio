@@ -14,10 +14,16 @@ npm run dev        # → http://localhost:3000
 
 | Piece | File | Notes |
 |---|---|---|
-| Geometry | `scad/opengrid_tile.scad` | Plain OpenSCAD with Customizer comments. Edit this to change the model. |
+| Geometry | `scad/openGrid.scad` | The **official openGrid tile generator** by BlackjackDuck (the same file behind MakerWorld's Parametric Model Maker), vendored unmodified from [QuackWorks](https://github.com/AndyLevesque/QuackWorks) (commit in `scad/upstream/`). `scad/simple_tile.scad` is an earlier from-scratch version kept for reference. |
 | Parameter UI | `src/customizer.js`, `src/main.js` | Parses `/* [Group] */`, `// description`, `// [a, b]`, `// [min:step:max]` and builds the form. |
-| Rendering | `src/worker.js` | `@lofcz/openscad-wasm` (Manifold backend) in a Web Worker → binary STL. |
+| Rendering | `src/worker.js` | `@lofcz/openscad-wasm` (Manifold backend) in a Web Worker → binary STL. BOSL2 (`vendor/BOSL2`, BSD-2) is written into the wasm filesystem so `include <BOSL2/std.scad>` resolves. ~7 s per render, dominated by OpenSCAD evaluating BOSL2. |
 | Preview | `src/viewer.js` | three.js + OrbitControls + STLLoader. |
 | Export | `server.mjs` | `POST /api/export` writes `exports/<name>.stl` and runs `open -a BambuStudio <file>`. Set `BAMBU_APP` if your app name differs. |
 
-The cell profile is derived from the mating snap in the official [openGrid-openSCAD](https://github.com/openGrid-3D/openGrid-openSCAD) repo (monokini grip: 25.0 mm tip, 26.4 mm catch at 0.4-1.0 mm depth, 3.4 mm insertion). That repo has no tile generator yet, so this is verified against the snap, not an official tile file.
+## Licensing
+
+- `scad/openGrid.scad` — openGrid design by David D, OpenSCAD by BlackjackDuck (Andy Levesque). **CC-BY-NC-SA 4.0**; derived parts CC-BY. Non-commercial use only.
+- `vendor/BOSL2` — BSD 2-Clause (Revar Desmera).
+- Everything else in this repo (the web app) is original.
+
+To update the generator: copy `openGrid/openGrid.scad` from QuackWorks over `scad/openGrid.scad` and record the commit in `scad/upstream/QuackWorks.commit`. Customizer groups shown in the panel are controlled by `HIDDEN_GROUPS` in `src/main.js`.

@@ -21,15 +21,17 @@ export function createViewer(container) {
   const fill = new THREE.DirectionalLight(0xffffff, 0.5);
   fill.position.set(-1, 1, 0.5);
   scene.add(fill);
-  // Build plate: dotted outline + dotted 10 mm grid on the z = 0 plane, corner at the origin.
+  // Build plate: dotted outline + dotted 10 mm grid on the z = 0 plane, centred on the origin
+  // (the openGrid tile is centred in XY, as it is when dropped onto a slicer plate).
   let bed = null;
   function setBed([w, h, z]) {
     bedSize = [w, h, z];
     if (bed) { scene.remove(bed); bed.traverse((o) => o.geometry?.dispose()); }
     bed = new THREE.Group();
     const pts = [];
-    for (let x = 0; x <= w; x += 10) pts.push(new THREE.Vector3(x, 0, 0), new THREE.Vector3(x, h, 0));
-    for (let y = 0; y <= h; y += 10) pts.push(new THREE.Vector3(0, y, 0), new THREE.Vector3(w, y, 0));
+    const x0 = -w / 2, y0 = -h / 2;
+    for (let x = 0; x <= w; x += 10) pts.push(new THREE.Vector3(x0 + x, y0, 0), new THREE.Vector3(x0 + x, y0 + h, 0));
+    for (let y = 0; y <= h; y += 10) pts.push(new THREE.Vector3(x0, y0 + y, 0), new THREE.Vector3(x0 + w, y0 + y, 0));
     const grid = new THREE.LineSegments(
       new THREE.BufferGeometry().setFromPoints(pts),
       new THREE.LineDashedMaterial({ color: 0x5a5d6a, dashSize: 0.8, gapSize: 1.6 }));
@@ -37,14 +39,14 @@ export function createViewer(container) {
     bed.add(grid);
     const outline = new THREE.LineLoop(
       new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0), new THREE.Vector3(w, 0, 0),
-        new THREE.Vector3(w, h, 0), new THREE.Vector3(0, h, 0)]),
+        new THREE.Vector3(x0, y0, 0), new THREE.Vector3(x0 + w, y0, 0),
+        new THREE.Vector3(x0 + w, y0 + h, 0), new THREE.Vector3(x0, y0 + h, 0)]),
       new THREE.LineDashedMaterial({ color: 0x9aa0b4, dashSize: 2, gapSize: 2 }));
     outline.computeLineDistances();
     bed.add(outline);
     const fill = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
       new THREE.MeshBasicMaterial({ color: 0x2a2c36, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
-    fill.position.set(w / 2, h / 2, -0.05);
+    fill.position.set(0, 0, -0.05);
     bed.add(fill);
     scene.add(bed);
     if (mesh) frame(mesh.geometry.boundingBox);
@@ -73,7 +75,8 @@ export function createViewer(container) {
   let bedSize = [0, 0, 0];
   function frame(modelBox) {
     // Frame the union of the model and the build plate
-    const box = modelBox.clone().union(new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(bedSize[0], bedSize[1], 0)));
+    const box = modelBox.clone().union(new THREE.Box3(
+      new THREE.Vector3(-bedSize[0] / 2, -bedSize[1] / 2, 0), new THREE.Vector3(bedSize[0] / 2, bedSize[1] / 2, 0)));
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const radius = Math.max(size.x, size.y, size.z);

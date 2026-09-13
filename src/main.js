@@ -2,13 +2,16 @@ import { parseCustomizer, toDefineArgs } from "./customizer.js";
 import { createViewer } from "./viewer.js";
 import { PRINTERS } from "./printers.js";
 import { FILAMENT_COLORS } from "./colors.js";
-import source from "../scad/opengrid_tile.scad?raw";
+import source from "../scad/openGrid.scad?raw";
+
+// Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
+const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space"]);
 
 const $ = (id) => document.getElementById(id);
 const viewer = createViewer($("viewer"));
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
-const params = parseCustomizer(source);
+const params = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group));
 const values = Object.fromEntries(params.map((p) => [p.name, p.value]));
 const setters = {}; // param name -> fn(value) that updates its form control
 let latestStl = null;
@@ -30,8 +33,8 @@ viewer.setBed(printer.bed);
 // Largest board (in 28 mm cells) that fits the selected plate.
 function fitToPlate() {
   const [w, h] = printer.bed;
-  setters.Columns?.(Math.max(1, Math.floor(w / 28)));
-  setters.Rows?.(Math.max(1, Math.floor(h / 28)));
+  setters.Board_Width?.(Math.max(1, Math.floor(w / 28)));
+  setters.Board_Height?.(Math.max(1, Math.floor(h / 28)));
   render();
 }
 
@@ -104,7 +107,9 @@ function buildForm() {
       field.appendChild(wrap);
     } else {
       const inp = Object.assign(document.createElement("input"), { type: p.type === "number" ? "number" : "text", id: p.name, value: p.value });
+      if (p.type === "number") inp.min = 1;
       inp.onchange = () => set(p.type === "number" ? Number(inp.value) : inp.value);
+      setters[p.name] = (v) => { inp.value = v; values[p.name] = v; };
       field.appendChild(inp);
     }
     if (p.description) {
@@ -124,7 +129,12 @@ function scheduleRender() {
   debounce = setTimeout(render, 250);
 }
 
+// One render in flight at a time; edits made meanwhile collapse into a single follow-up render.
+let inFlight = false;
+let pending = false;
 function render() {
+  if (inFlight) { pending = true; return; }
+  inFlight = true;
   const id = ++renderId;
   setStatus("Rendering…");
   $("render").disabled = true;
@@ -132,6 +142,8 @@ function render() {
 }
 
 worker.onmessage = ({ data }) => {
+  inFlight = false;
+  if (pending) { pending = false; render(); return; }
   if (data.id !== renderId) return; // stale result
   $("render").disabled = false;
   $("log").textContent = data.log.join("\n");
@@ -165,7 +177,7 @@ function setStatus(text, error = false) {
 // ---- export to Bambu Studio -------------------------------------------------
 $("export").onclick = async () => {
   if (!latestStl) return;
-  const name = `opengrid_${values.Tile_Type}_${values.Columns}x${values.Rows}`.toLowerCase();
+  const name = `opengrid_${values.Full_or_Lite}_${values.Board_Width}x${values.Board_Height}`.toLowerCase();
   setStatus("Sending to Bambu Studio…");
   try {
     const res = await fetch(`/api/export?name=${encodeURIComponent(name)}`, {
