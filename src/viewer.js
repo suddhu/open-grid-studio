@@ -396,7 +396,7 @@ export function createViewer(container) {
       const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y), dz = Math.abs(b.z - a.z);
       renderer.domElement.dataset.measure = fmt(d); // readable by tests / the status line
       // Sub-line: per-axis deltas in the axis colours (X red, Y green, Z blue), like the gizmo
-      const sub = [["X " + fmt(dx), "#ff4d4d"], ["Y " + fmt(dy), "#4dff4d"], ["Z " + fmt(dz), "#69b1ff"]];
+      const sub = [[fmt(dx), "#ff4d4d"], ["/", "#8b8d98"], [fmt(dy), "#4dff4d"], ["/", "#8b8d98"], [fmt(dz), "#69b1ff"]];
       const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture2(fmt(d), sub), depthTest: false, transparent: true }));
       label.scale.set(70, 22, 1);
       label.position.copy(a).add(b).multiplyScalar(0.5).add(new THREE.Vector3(0, 0, 8));
@@ -525,7 +525,7 @@ function textTexture2(line1, segments) {
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillStyle = "#ffffff"; ctx.font = "bold 72px system-ui, sans-serif"; ctx.fillText(line1, 320, 76);
   ctx.font = "bold 34px system-ui, sans-serif";
-  const gap = 28;
+  const gap = 16;
   const widths = segments.map(([t]) => ctx.measureText(t).width);
   let x = 320 - (widths.reduce((a, b) => a + b, 0) + gap * (segments.length - 1)) / 2;
   ctx.textAlign = "left";
