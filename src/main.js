@@ -6,13 +6,21 @@ import source from "../scad/openGrid.scad?raw";
 
 // Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
 const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space"]);
+// Individual fine-tuning variables hidden from the panel (defaults suit M4 / #8 screws).
+const HIDDEN_PARAMS = new Set([
+  "Board_Width", "Board_Height", "Screw_Mounting", // edited on the model (drag arrows / click rings)
+  "Screw_Every_X_Rows", "Screw_Every_X_Columns", "Screw_Diameter", "Screw_Head_Diameter",
+  "Screw_Head_Inset", "Screw_Head_Is_CounterSunk", "Screw_Head_CounterSunk_Degree",
+]);
 
 const $ = (id) => document.getElementById(id);
 const viewer = createViewer($("viewer"));
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
-const params = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group));
-const values = Object.fromEntries(params.map((p) => [p.name, p.value]));
+const allParams = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group));
+const params = allParams.filter((p) => !HIDDEN_PARAMS.has(p.name)); // shown in the form
+const values = Object.fromEntries(allParams.map((p) => [p.name, p.value])); // includes on-model ones
+window.__values = values; // debugging aid: inspect current parameters from the console
 const setters = {}; // param name -> fn(value) that updates its form control
 let latestStl = null;
 let latestBox = null;
@@ -33,8 +41,8 @@ viewer.setBed(printer.bed);
 // Largest board (in 28 mm cells) that fits the selected plate.
 function fitToPlate() {
   const [w, h] = printer.bed;
-  setters.Board_Width?.(Math.max(1, Math.floor(w / 28)));
-  setters.Board_Height?.(Math.max(1, Math.floor(h / 28)));
+  values.Board_Width = Math.max(1, Math.floor(w / 28));
+  values.Board_Height = Math.max(1, Math.floor(h / 28));
   render();
 }
 
@@ -63,89 +71,114 @@ function selectColor(c) {
 }
 selectColor(color);
 
-// ---- board-edge widget ------------------------------------------------------
-// Per-corner / per-edge booleans are shown as a clickable top-down board diagram
-// instead of eight checkboxes. Maps widget positions to Customizer variable names.
+// ---- on-model handles -------------------------------------------------------
+// Per-corner / per-edge booleans and screw positions are edited by clicking handles on the 3D
+// model rather than via form fields. These map handle positions to Customizer variable names.
 const SPATIAL = {
   corners: { TL: "Chamfer_Top_Left", TR: "Chamfer_Top_Right", BL: "Chamfer_Bottom_Left", BR: "Chamfer_Bottom_Right" },
   edges: { T: "Connector_Holes_Top", B: "Connector_Holes_Bottom", L: "Connector_Holes_Left", R: "Connector_Holes_Right" },
 };
-let syncBoardWidget = () => {};
-const SPATIAL_NAMES = new Set([...Object.values(SPATIAL.corners), ...Object.values(SPATIAL.edges)]);
+// Variables edited on the model, hidden from the form.
+const ON_MODEL = new Set([...Object.values(SPATIAL.corners), ...Object.values(SPATIAL.edges), "Screw_Custom_Positions"]);
+const syncHandles = () => viewer.syncHandles(handleItems(latestBox));
 
-function buildBoardWidget() {
-  const NS = "http://www.w3.org/2000/svg";
-  const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
-  const wrap = document.createElement("div");
-  wrap.className = "board-widget";
-  const svg = el("svg", { viewBox: "0 0 120 120", role: "group", "aria-label": "Board corners and edges" });
-  svg.appendChild(el("rect", { x: 14, y: 14, width: 92, height: 92, rx: 6, class: "board" }));
-  // faint grid lines so it reads as an openGrid tile
-  for (let i = 1; i < 4; i++) {
-    svg.appendChild(el("line", { x1: 14 + i * 23, y1: 14, x2: 14 + i * 23, y2: 106, class: "grid" }));
-    svg.appendChild(el("line", { x1: 14, y1: 14 + i * 23, x2: 106, y2: 14 + i * 23, class: "grid" }));
+// 3D handle positions for the current model: corners and edge pills floating outside the board,
+// screw rings over each interior intersection. Same variables the generator reads.
+function handleItems(box) {
+  if (!box) return [];
+  const { min, max } = box;
+  // Handles float outside the board so they don't crowd the mesh: corners/edges 12 mm out and
+  // 6 mm up, screw rings 3 mm above the face.
+  const OUT = 12, UP = 6;
+  const z = max.z + UP, cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2;
+  const x0 = min.x - OUT, x1 = max.x + OUT, y0 = min.y - OUT, y1 = max.y + OUT;
+  const edgesOn = values.Connector_Holes !== false, cornersOn = values.Chamfers !== "None";
+  const c = (id, x, y, label) => ({ id, kind: "corner", position: [x, y, z], on: !!values[id], enabled: cornersOn, label });
+  const e = (id, x, y, rot, label) => ({ id, kind: "edge", position: [x, y, z], rotation: rot, on: !!values[id], enabled: edgesOn, label });
+  const { cols, rows } = screwGrid();
+  const on = screwPattern();
+  const screws = [];
+  for (let r = 0; r < rows; r++) for (let cI = 0; cI < cols; cI++) {
+    const i = r * cols + cI;
+    screws.push({ id: `screw:${i}`, kind: "screw", on: on.has(i), enabled: true,
+      position: [cx - (cols - 1) * 14 + cI * 28, cy + (rows - 1) * 14 - r * 28, max.z + 3],
+      label: `Screw hole (row ${r + 1}, column ${cI + 1})` });
   }
-  const buttons = [];
-  const add = (shape, name, label) => {
-    shape.classList.add("hit");
-    shape.setAttribute("tabindex", "0");
-    shape.setAttribute("role", "checkbox");
-    shape.setAttribute("aria-label", label);
-    const title = el("title", {}); title.textContent = label; shape.appendChild(title);
-    const toggle = () => { values[name] = !values[name]; sync(); scheduleRender(); };
-    shape.addEventListener("click", toggle);
-    shape.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); } });
-    buttons.push([shape, name]);
-    svg.appendChild(shape);
-    setters[name] = (v) => { values[name] = v; sync(); };
-  };
-  // edges: connector holes (pills along each side)
-  add(el("rect", { x: 34, y: 6, width: 52, height: 12, rx: 6 }), SPATIAL.edges.T, "Connector holes: top edge");
-  add(el("rect", { x: 34, y: 102, width: 52, height: 12, rx: 6 }), SPATIAL.edges.B, "Connector holes: bottom edge");
-  add(el("rect", { x: 6, y: 34, width: 12, height: 52, rx: 6 }), SPATIAL.edges.L, "Connector holes: left edge");
-  add(el("rect", { x: 102, y: 34, width: 12, height: 52, rx: 6 }), SPATIAL.edges.R, "Connector holes: right edge");
-  // corners: chamfers (diagonal-cut squares)
-  const corner = (cx, cy) => el("circle", { cx, cy, r: 9 });
-  add(corner(14, 14), SPATIAL.corners.TL, "Chamfer: top-left corner");
-  add(corner(106, 14), SPATIAL.corners.TR, "Chamfer: top-right corner");
-  add(corner(14, 106), SPATIAL.corners.BL, "Chamfer: bottom-left corner");
-  add(corner(106, 106), SPATIAL.corners.BR, "Chamfer: bottom-right corner");
-  const edgeNames = new Set(Object.values(SPATIAL.edges));
-  function sync() {
-    const edgesOn = values.Connector_Holes !== false;
-    const cornersOn = values.Chamfers !== "None";
-    for (const [shape, name] of buttons) {
-      shape.classList.toggle("on", !!values[name]);
-      shape.classList.toggle("off", edgeNames.has(name) ? !edgesOn : !cornersOn);
-      shape.setAttribute("aria-checked", String(!!values[name]));
+  return [
+    ...screws,
+    c(SPATIAL.corners.TL, x0, y1, "Chamfer: top-left corner"),
+    c(SPATIAL.corners.TR, x1, y1, "Chamfer: top-right corner"),
+    c(SPATIAL.corners.BL, x0, y0, "Chamfer: bottom-left corner"),
+    c(SPATIAL.corners.BR, x1, y0, "Chamfer: bottom-right corner"),
+    e(SPATIAL.edges.T, cx, y1, Math.PI / 2, "Connector holes: top edge"),
+    e(SPATIAL.edges.B, cx, y0, Math.PI / 2, "Connector holes: bottom edge"),
+    e(SPATIAL.edges.L, x0, cy, 0, "Connector holes: left edge"),
+    e(SPATIAL.edges.R, x1, cy, 0, "Connector holes: right edge"),
+  ];
+}
+
+// ---- screw holes ------------------------------------------------------------
+// The generator puts screws on interior lattice intersections, (W-1) x (H-1) of them, indexed
+// left-to-right, top-to-bottom (see Screw_Mounting == "Custom" in openGrid.scad).
+// screwPattern() reproduces which of those each mounting mode fills, so the 3D handles can show
+// the current pattern and a click can convert it to an explicit Custom string.
+function screwGrid() {
+  return { cols: Math.max(0, (values.Board_Width | 0) - 1), rows: Math.max(0, (values.Board_Height | 0) - 1) };
+}
+function screwPattern() {
+  const { cols, rows } = screwGrid();
+  const on = new Set();
+  const idx = (c, r) => r * cols + c;
+  const mode = values.Screw_Mounting;
+  if (mode === "Everywhere") {
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) on.add(idx(c, r));
+  } else if (mode === "Corners") {
+    if (cols > 0 && rows > 0) for (const c of new Set([0, cols - 1])) for (const r of new Set([0, rows - 1])) on.add(idx(c, r));
+  } else if (mode === "By Row and Column") {
+    // Mirrors BOSL2 grid_copies(spacing, size) plus the generator's half-tile offset, then snaps to intersections.
+    const W = values.Board_Width | 0, H = values.Board_Height | 0;
+    const sx = Math.max(1, values.Screw_Every_X_Columns | 0), sy = Math.max(1, values.Screw_Every_X_Rows | 0);
+    const offX = ((W - 2) % sx) % 2 === 0 ? 0 : -0.5, offY = ((H - 2) % sy) % 2 === 0 ? 0 : 0.5;
+    const nx = Math.floor((W - 2) / sx) + 1, ny = Math.floor((H - 2) / sy) + 1;
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+      const x = -(nx - 1) * sx / 2 + i * sx + offX; // in tile units from board centre
+      const y = -(ny - 1) * sy / 2 + j * sy + offY;
+      const c = x + (W - 2) / 2, r = (H - 2) / 2 - y;
+      if (Math.abs(c - Math.round(c)) < 1e-6 && Math.abs(r - Math.round(r)) < 1e-6) {
+        const ci = Math.round(c), ri = Math.round(r);
+        if (ci >= 0 && ci < cols && ri >= 0 && ri < rows) on.add(idx(ci, ri));
+      }
     }
+  } else if (mode === "Custom") {
+    const str = String(values.Screw_Custom_Positions ?? "");
+    for (let i = 0; i < Math.min(str.length, cols * rows); i++) if (str[i] === "1") on.add(i);
   }
-  sync();
-  syncBoardWidget = sync;
-  wrap.appendChild(svg);
-  const legend = document.createElement("div");
-  legend.className = "legend";
-  legend.innerHTML = '<span><i class="sw corner"></i> corner chamfer</span><span><i class="sw edge"></i> edge connector holes</span>';
-  wrap.appendChild(legend);
-  return wrap;
+  return on;
+}
+function toggleScrew(i) {
+  const { cols, rows } = screwGrid();
+  const on = screwPattern();
+  if (on.has(i)) on.delete(i); else on.add(i);
+  const str = Array.from({ length: cols * rows }, (_, k) => (on.has(k) ? "1" : "0")).join("");
+  values.Screw_Mounting = "Custom";
+  values.Screw_Custom_Positions = str;
 }
 
 // ---- parameter form ---------------------------------------------------------
 function buildForm() {
   const form = $("params");
   let group = null;
-  let widgetPlaced = false;
+  const hint = (text) => { const el = document.createElement("p"); el.className = "hint"; el.textContent = text; form.appendChild(el); };
   for (const p of params) {
-    if (SPATIAL_NAMES.has(p.name)) {
-      // First per-corner/edge variable: put the board diagram here, skip the checkboxes.
-      if (!widgetPlaced) { form.appendChild(buildBoardWidget()); widgetPlaced = true; }
-      continue;
-    }
+    if (ON_MODEL.has(p.name)) continue; // edited by clicking the model
     if (p.group !== group) {
       group = p.group;
       const h = document.createElement("h2");
       h.textContent = group;
       form.appendChild(h);
+      if (group.startsWith("Chamfer")) hint("Click the corner and edge markers on the model to toggle chamfers and connector holes.");
+      if (group.startsWith("Screw")) hint("Click the rings on the model to add or remove screw holes.");
+      if (group.startsWith("Board")) hint("Drag the blue arrows on the model to change the board size.");
     }
     const field = document.createElement("div");
     field.className = "field";
@@ -154,7 +187,7 @@ function buildForm() {
     label.htmlFor = p.name;
     field.appendChild(label);
 
-    const set = (v) => { values[p.name] = v; syncBoardWidget(); scheduleRender(); };
+    const set = (v) => { values[p.name] = v; syncHandles(); scheduleRender(); };
     if (p.type === "bool") {
       const cb = Object.assign(document.createElement("input"), { type: "checkbox", id: p.name, checked: p.value });
       cb.onchange = () => set(cb.checked);
@@ -162,9 +195,13 @@ function buildForm() {
     } else if (p.type === "choice") {
       const sel = document.createElement("select");
       sel.id = p.name;
-      for (const o of p.options) sel.appendChild(new Option(String(o), String(o)));
+      for (const o of p.options) {
+        if (p.name === "Screw_Mounting" && o === "By Row and Column") continue; // needs hidden spacing fields
+        sel.appendChild(new Option(String(o), String(o)));
+      }
       sel.value = String(p.value);
       sel.onchange = () => set(typeof p.value === "number" ? Number(sel.value) : sel.value);
+      setters[p.name] = (v) => { sel.value = String(v); values[p.name] = v; };
       field.appendChild(sel);
     } else if (p.type === "range") {
       const num = Object.assign(document.createElement("input"), { type: "number", id: p.name, min: p.min, max: p.max, step: p.step, value: p.value });
@@ -227,6 +264,16 @@ worker.onmessage = ({ data }) => {
   latestStl = data.stl;
   latestBox = viewer.setStl(latestStl.buffer, { refit: firstRender });
   firstRender = false;
+  viewer.setResizeHandles({
+    box: latestBox, cols: values.Board_Width | 0, rows: values.Board_Height | 0,
+    onResize: (cols, rows) => { values.Board_Width = cols; values.Board_Height = rows; render(); },
+  });
+  viewer.setHandles(handleItems(latestBox), (id) => {
+    if (id.startsWith("screw:")) toggleScrew(Number(id.slice(6)));
+    else values[id] = !values[id];
+    syncHandles();
+    scheduleRender();
+  });
   updateStatus(`Rendered in ${(data.ms / 1000).toFixed(1)} s`);
   $("export").disabled = false;
 };
@@ -238,7 +285,7 @@ function updateStatus(note) {
   const s = latestBox.max.clone().sub(latestBox.min);
   const [bw, bh, bz] = printer.bed;
   const fits = s.x <= bw && s.y <= bh && s.z <= bz;
-  setStatus(`${lastRenderNote} — ${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm — `
+  setStatus(`${lastRenderNote} — ${values.Board_Width} × ${values.Board_Height} tiles, ${s.x.toFixed(1)} × ${s.y.toFixed(1)} × ${s.z.toFixed(1)} mm — `
     + (fits ? `fits ${printer.name}` : `exceeds ${printer.name} plate (${bw} × ${bh} mm)`), !fits);
 }
 
@@ -248,6 +295,8 @@ function setStatus(text, error = false) {
 }
 
 // ---- export to Bambu Studio -------------------------------------------------
+$("topview").onclick = () => viewer.viewTop();
+
 $("export").onclick = async () => {
   if (!latestStl) return;
   const name = `opengrid_${values.Full_or_Lite}_${values.Board_Width}x${values.Board_Height}`.toLowerCase();

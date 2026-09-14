@@ -111,6 +111,165 @@ export function createViewer(container) {
     renderer.render(gizmoScene, gizmoCamera);
   })();
 
+  // ---- clickable 3D handles (corner chamfers / edge connector holes / screw rings) ----
+  const handleGroup = new THREE.Group();
+  scene.add(handleGroup);
+  const raycaster = new THREE.Raycaster();
+  const HANDLE_ON = new THREE.Color(0xf28c28), HANDLE_OFF = new THREE.Color(0x5a5d6a);
+  let handles = [];        // { hit: Mesh (pickable), vis: Mesh (coloured), item }
+  let onHandleClick = () => {};
+  let hovered = null;
+
+  // items: [{ id, kind: "corner"|"edge"|"screw", position: [x,y,z], rotation?: number, on, enabled, label }]
+  function setHandles(items, onClick) {
+    onHandleClick = onClick;
+    handleGroup.clear();
+    handles = items.map((it) => {
+      const mat = new THREE.MeshStandardMaterial({ color: HANDLE_OFF, roughness: 0.4, transparent: true });
+      let vis, hit;
+      if (it.kind === "corner") {
+        vis = hit = new THREE.Mesh(new THREE.SphereGeometry(4, 20, 14), mat);
+      } else if (it.kind === "edge") {
+        vis = hit = new THREE.Mesh(new THREE.CapsuleGeometry(2.2, 14, 6, 12), mat);
+        vis.rotation.z = it.rotation ?? 0; // capsule is Y-aligned; rotate to run along the edge
+      } else {
+        // Ring around the hole; a torus has a hole in the middle, so pick against an invisible disc.
+        vis = new THREE.Mesh(new THREE.TorusGeometry(3.6, 1.1, 10, 24), mat);
+        hit = new THREE.Mesh(new THREE.CircleGeometry(5, 16), new THREE.MeshBasicMaterial({ visible: false }));
+        vis.add(hit);
+      }
+      vis.position.set(...it.position);
+      handleGroup.add(vis);
+      const h = { hit, vis, item: it };
+      hit.userData.handle = h;
+      return h;
+    });
+    syncHandles(items);
+  }
+  function syncHandles(items) {
+    for (const h of handles) {
+      h.item = items.find((i) => i.id === h.item.id) ?? h.item;
+      h.vis.material.color.copy(h.item.on ? HANDLE_ON : HANDLE_OFF);
+      h.vis.material.opacity = h.item.enabled === false ? 0.3 : 1;
+      h.vis.material.emissive.set(0x000000);
+    }
+  }
+  function pointerNDC(ev) {
+    const r = renderer.domElement.getBoundingClientRect();
+    return new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  }
+  function pick(ev) {
+    raycaster.setFromCamera(pointerNDC(ev), camera);
+    const hit = raycaster.intersectObjects([...handles.map((h) => h.hit), ...resizeArrows], false)[0]?.object;
+    return hit?.userData.handle ?? hit?.userData.resize ?? null;
+  }
+
+  // ---- drag-to-resize arrows (board width / height in whole tiles) ---------------------
+  let resizeArrows = [];
+  let resizeCfg = null;   // { box, cols, rows, onResize }
+  let drag = null;        // { axis, cols, rows }
+  const preview = new THREE.Group();
+  scene.add(preview);
+  const dragPlane = new THREE.Plane();
+
+  function setResizeHandles(cfg) {
+    resizeCfg = cfg;
+    for (const a of resizeArrows) { scene.remove(a); a.geometry.dispose(); }
+    resizeArrows = [];
+    if (!cfg) return;
+    const { min, max } = cfg.box;
+    const cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2, z = max.z + 6;
+    const OUT = 34;
+    const mk = (axis, x, y, rotZ, label) => {
+      const m = new THREE.Mesh(new THREE.ConeGeometry(4.5, 12, 18),
+        new THREE.MeshStandardMaterial({ color: 0x69b1ff, roughness: 0.4 }));
+      m.position.set(x, y, z);
+      m.rotation.z = rotZ; // cone points +Y by default
+      m.userData.resize = { axis, label };
+      scene.add(m);
+      resizeArrows.push(m);
+    };
+    mk("x", max.x + OUT, cy, -Math.PI / 2, "Drag to change board width");
+    mk("y", cx, max.y + OUT, 0, "Drag to change board height");
+  }
+  function showPreview(cols, rows, z) {
+    preview.clear();
+    const w = cols * 28, h = rows * 28;
+    const outline = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-w / 2, -h / 2, z), new THREE.Vector3(w / 2, -h / 2, z),
+        new THREE.Vector3(w / 2, h / 2, z), new THREE.Vector3(-w / 2, h / 2, z)]),
+      new THREE.LineDashedMaterial({ color: 0x69b1ff, dashSize: 4, gapSize: 3, depthTest: false }));
+    outline.computeLineDistances();
+    outline.renderOrder = 998;
+    preview.add(outline);
+    const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture(`${cols} × ${rows}`, 0x69b1ff), depthTest: false, transparent: true }));
+    label.scale.set(40, 20, 1);
+    label.position.set(0, 0, z + 10);
+    label.renderOrder = 1001;
+    preview.add(label);
+  }
+
+  let downAt = null;
+  renderer.domElement.addEventListener("pointerdown", (ev) => {
+    downAt = [ev.clientX, ev.clientY];
+    const p = pick(ev);
+    if (p?.axis && resizeCfg) {
+      // Start a resize drag on the plane of the board's top face
+      drag = { axis: p.axis, cols: resizeCfg.cols, rows: resizeCfg.rows };
+      controls.enabled = false;
+      dragPlane.set(new THREE.Vector3(0, 0, 1), -resizeCfg.box.max.z);
+      renderer.domElement.setPointerCapture(ev.pointerId);
+      showPreview(drag.cols, drag.rows, resizeCfg.box.max.z);
+    }
+  });
+  renderer.domElement.addEventListener("pointermove", (ev) => {
+    if (drag) {
+      raycaster.setFromCamera(pointerNDC(ev), camera);
+      const hitPt = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(dragPlane, hitPt)) return;
+      const { box } = resizeCfg;
+      const c = new THREE.Vector3((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, 0);
+      // Board is centred, so the dragged edge sits at half the size; arrow offset (34 mm) subtracted
+      const clamp = (v) => Math.max(1, Math.min(16, v));
+      if (drag.axis === "x") drag.cols = clamp(Math.round(((hitPt.x - c.x - 34) * 2) / 28));
+      else drag.rows = clamp(Math.round(((hitPt.y - c.y - 34) * 2) / 28));
+      showPreview(drag.cols, drag.rows, box.max.z);
+      return;
+    }
+    const h = pick(ev);
+    if (h !== hovered) {
+      hovered?.vis?.material.emissive.set(0x000000);
+      hovered = h;
+      if (h?.vis) h.vis.material.emissive.set(0x333333);
+      renderer.domElement.style.cursor = h ? (h.axis ? (h.axis === "x" ? "ew-resize" : "ns-resize") : "pointer") : "";
+      renderer.domElement.title = h ? (h.item?.label ?? h.label ?? "") : "";
+    }
+  });
+  renderer.domElement.addEventListener("pointerup", (ev) => {
+    if (drag) {
+      const { cols, rows } = drag;
+      drag = null;
+      controls.enabled = true;
+      preview.clear();
+      if (cols !== resizeCfg.cols || rows !== resizeCfg.rows) resizeCfg.onResize(cols, rows);
+      return;
+    }
+    // A click, not an orbit drag: pointer moved less than a few pixels
+    if (!downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
+    const h = pick(ev);
+    if (h?.item) onHandleClick(h.item.id);
+  });
+
+  function viewTop() {
+    const box = mesh ? mesh.geometry.boundingBox : new THREE.Box3(new THREE.Vector3(-90, -90, 0), new THREE.Vector3(90, 90, 0));
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    camera.position.set(center.x, center.y - 0.001, center.z + Math.max(size.x, size.y, bedSize[0], bedSize[1]) * 1.4);
+    controls.target.copy(center);
+    controls.update();
+  }
+
   function setColor(hex) {
     material.color.set(hex);
     // Very dark filaments would render as a silhouette; lift the shaded color slightly.
@@ -118,7 +277,7 @@ export function createViewer(container) {
     if (hsl.l < 0.08) material.color.setHSL(hsl.h, hsl.s, 0.08);
   }
 
-  return { setStl, setBed, setColor, refit: () => mesh && frame(mesh.geometry.boundingBox) };
+  return { setStl, setBed, setColor, setHandles, syncHandles, setResizeHandles, viewTop, refit: () => mesh && frame(mesh.geometry.boundingBox) };
 }
 
 // Three colored axis lines with text labels; depthTest off so they show through geometry.
@@ -141,6 +300,21 @@ function makeAxes(length, labelSize) {
     group.add(sprite);
   }
   return group;
+}
+
+function textTexture(text, color) {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "rgba(20,21,24,0.85)";
+  ctx.beginPath(); ctx.roundRect(28, 24, 200, 80, 16); ctx.fill();
+  ctx.font = "bold 56px system-ui, sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#" + color.toString(16).padStart(6, "0");
+  ctx.fillText(text, 128, 66);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 function labelTexture(text, color) {
