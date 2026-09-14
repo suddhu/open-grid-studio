@@ -133,6 +133,17 @@ export function createViewer(container) {
     return raycaster.intersectObjects(resizeArrows, false)[0]?.object.userData.resize ?? null;
   }
 
+  // Free GPU resources of everything in a transient group, then empty it. Cached part geometry is
+  // shared across meshes and flagged userData.sharedGeometry, so it is left alone.
+  function disposeGroup(group) {
+    group.traverse((o) => {
+      if (o === group) return;
+      if (o.geometry && !o.userData.sharedGeometry) o.geometry.dispose();
+      if (!o.userData.sharedMaterial) for (const m of [].concat(o.material ?? [])) { m.map?.dispose(); m.dispose(); }
+    });
+    group.clear();
+  }
+
   // ---- drag-to-resize arrows (board width / height in whole tiles) ---------------------
   let resizeArrows = [];
   let resizeCfg = null;   // { box, cols, rows, onResize }
@@ -162,7 +173,7 @@ export function createViewer(container) {
     mk("y", cx, max.y + OUT, 0, "Drag to change board height");
   }
   function showPreview(cols, rows, z) {
-    preview.clear();
+    disposeGroup(preview);
     const w = cols * 28, h = rows * 28;
     const outline = new THREE.LineLoop(
       new THREE.BufferGeometry().setFromPoints([
@@ -188,7 +199,7 @@ export function createViewer(container) {
       drag = { axis: p.axis, cols: resizeCfg.cols, rows: resizeCfg.rows };
       controls.enabled = false;
       dragPlane.set(new THREE.Vector3(0, 0, 1), -resizeCfg.box.max.z);
-      renderer.domElement.setPointerCapture(ev.pointerId);
+      try { renderer.domElement.setPointerCapture(ev.pointerId); } catch {}
       showPreview(drag.cols, drag.rows, resizeCfg.box.max.z);
     }
   });
@@ -219,7 +230,7 @@ export function createViewer(container) {
     const { cols, rows } = drag;
     drag = null;
     controls.enabled = true;
-    preview.clear();
+    disposeGroup(preview);
     if (cols !== resizeCfg.cols || rows !== resizeCfg.rows) resizeCfg.onResize(cols, rows);
   });
 
@@ -261,9 +272,10 @@ export function createViewer(container) {
   const ghostBad = new THREE.MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.35, depthTest: false });
   // cells: [[c, r], ...] world rectangles via centres; z: top face
   function setGhost(cellRects, valid, geometry, matrix) {
-    ghost.clear();
+    disposeGroup(ghost);
     for (const [x, y, w, h, z] of cellRects) {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w - 2, h - 2), valid ? ghostOk : ghostBad);
+      m.userData.sharedMaterial = true;
       m.position.set(x, y, z + 0.2);
       m.renderOrder = 996;
       ghost.add(m);
@@ -272,10 +284,11 @@ export function createViewer(container) {
       const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: PART_COLOR, transparent: true, opacity: 0.5 }));
       m.matrixAutoUpdate = false;
       m.matrix.copy(matrix);
+      m.userData.sharedGeometry = true;
       ghost.add(m);
     }
   }
-  const clearGhost = () => ghost.clear();
+  const clearGhost = () => disposeGroup(ghost);
 
   // Pointer position on the plane z = zPlane, in world XY (null if the ray misses)
   function boardPoint(ev, zPlane) {
@@ -291,7 +304,12 @@ export function createViewer(container) {
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     if (drag || placing || measuring) return;
     const id = pickPart(ev);
-    if (id != null) { partDrag = { id, moved: false }; controls.enabled = false; renderer.domElement.setPointerCapture(ev.pointerId); }
+    if (id != null) {
+      partDrag = { id, moved: false };
+      controls.enabled = false;
+      try { renderer.domElement.setPointerCapture(ev.pointerId); } catch {}
+      emit("partdragstart", id, ev);
+    }
   });
   const setPlacing = (v) => { placing = v; if (!v) clearGhost(); };
   renderer.domElement.addEventListener("pointermove", (ev) => {
@@ -342,7 +360,7 @@ export function createViewer(container) {
     return best;
   }
   function drawMeasure(a, b) {
-    measureGroup.clear();
+    disposeGroup(measureGroup);
     if (a) measureGroup.add(mkMarker(a));
     if (a && b) {
       measureGroup.add(mkMarker(b));
@@ -365,10 +383,10 @@ export function createViewer(container) {
   function setMeasuring(v, unit) {
     measuring = v;
     if (unit) measureUnit = unit;
-    if (!v) { measureA = measureB = null; measureGroup.clear(); renderer.domElement.style.cursor = ""; }
+    if (!v) { measureA = measureB = null; disposeGroup(measureGroup); renderer.domElement.style.cursor = ""; }
     else drawMeasure(measureA, measureB);
   }
-  const clearMeasure = () => { measureA = measureB = null; measureGroup.clear(); };
+  const clearMeasure = () => { measureA = measureB = null; disposeGroup(measureGroup); };
   renderer.domElement.addEventListener("pointermove", (ev) => {
     if (!measuring) return;
     renderer.domElement.style.cursor = "crosshair";
@@ -418,7 +436,10 @@ export function createViewer(container) {
     const box = mesh ? mesh.geometry.boundingBox : new THREE.Box3(new THREE.Vector3(-90, -90, 0), new THREE.Vector3(90, 90, 0));
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
-    camera.position.set(center.x, center.y - 0.001, center.z + Math.max(size.x, size.y, bedSize[0], bedSize[1]) * 1.4);
+    // Slight tilt toward -Y (about 1°) so OrbitControls resolves a consistent Y-up roll; exactly
+    // straight down is degenerate and inherits whatever azimuth the user last orbited to.
+    const d = Math.max(size.x, size.y, bedSize[0], bedSize[1]) * 1.4;
+    camera.position.set(center.x, center.y - d * 0.02, center.z + d);
     controls.target.copy(center);
     controls.update();
   }

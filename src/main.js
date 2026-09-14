@@ -23,7 +23,7 @@ const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "modu
 const allParams = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group) || p.name in FORCED);
 const params = allParams.filter((p) => !HIDDEN_PARAMS.has(p.name) && !(p.name in FORCED)); // shown in the form
 const values = Object.assign(Object.fromEntries(allParams.map((p) => [p.name, p.value])), FORCED);
-window.__values = values; // debugging aid: inspect current parameters from the console
+window.__values = values; window.__viewer = viewer; // debugging aids for the console
 let latestStl = null;
 let latestBox = null;
 let printer = PRINTERS[0];
@@ -282,7 +282,7 @@ $("printConnectors").onclick = async () => {
 $("export").onclick = async () => {
   if (!latestStl) return;
   const name = `opengrid_${values.Full_or_Lite}_${values.Board_Width}x${values.Board_Height}`.toLowerCase();
-  setStatus("Sending to Bambu Studio…");
+  setStatus("Sending board to Bambu Studio…");
   try {
     const res = await fetch(`/api/export?name=${encodeURIComponent(name)}`, {
       method: "POST",
@@ -291,7 +291,7 @@ $("export").onclick = async () => {
     });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || res.statusText);
-    setStatus(`Opened ${body.path} in Bambu Studio`);
+    setStatus(`Opened board in Bambu Studio (${body.path})`);
   } catch (err) {
     setStatus(`Export failed: ${err.message}`, true);
   }
@@ -325,7 +325,11 @@ let snapGeo = null; // { pos, box, geometry } — official Multiconnect snap for
 
 try {
   const saved = JSON.parse(localStorage.getItem(PARTS_KEY) || "[]");
-  placed = saved.filter((p) => partDefs[p.type]).map((p) => ({ ...p, id: nextPartId++, params: { ...partDefs[p.type].defaults, ...p.params } }));
+  placed = saved.filter((p) => partDefs[p.type]).map((p) => {
+    const def = partDefs[p.type];
+    const forced = Object.fromEntries(Object.entries(def.forced).filter(([k]) => k in def.defaults));
+    return { ...p, id: nextPartId++, params: { ...def.defaults, ...p.params, ...forced } }; // forced keys always win
+  });
 } catch {}
 const savePlaced = () => { try { localStorage.setItem(PARTS_KEY, JSON.stringify(placed.map(({ type, cell, params }) => ({ type, cell, params })))); } catch {} };
 
@@ -341,9 +345,8 @@ function ensurePartGeo(type, params) {
     if (data.error) throw new Error(data.error);
     const g = meshData(toArrayBuffer(data.stl));
     partGeo.set(key, g);
-    partPending.delete(key);
     return g;
-  });
+  }).finally(() => partPending.delete(key)); // a failure is retried next time, not cached
   partPending.set(key, pr);
   return pr;
 }
@@ -385,21 +388,33 @@ function placementValid(box, c, r, excludeId) {
   return { ...pl, valid };
 }
 
+let refreshSeq = 0;
 async function refreshParts() {
   if (!latestBox) return;
-  const [W, H] = boardWH();
-  const geos = await Promise.all(placed.map((p) => ensurePartGeo(p.type, p.params).catch((err) => {
+  const seq = ++refreshSeq;
+  const snapshot = [...placed];
+  const geos = await Promise.all(snapshot.map((p) => ensurePartGeo(p.type, p.params).catch((err) => {
     setStatus(`${partDefs[p.type].name} failed: ${err.message}`, true);
     return null;
   })));
+  if (seq !== refreshSeq) return; // a newer refresh started while we were rendering; it will draw
+  const [W, H] = boardWH();
   const list = [];
-  placed.forEach((p, i) => {
+  const dropped = [];
+  snapshot.forEach((p, i) => {
     const g = geos[i];
     if (!g) return;
     const pl = placePart(g.box, p.cell[0], p.cell[1], W, H, boardTop());
+    if (!pl.inBounds) { dropped.push(p); return; } // board shrank (or stale storage): part no longer fits
     list.push({ id: p.id, geometry: g.geometry, matrix: pl.matrix, selected: p.id === selectedId,
       snaps: snapGeo ? pl.snapCells.map(([c, r]) => snapMatrix(c, r)) : [], snapGeometry: snapGeo?.geometry });
   });
+  if (dropped.length) {
+    placed = placed.filter((p) => !dropped.includes(p));
+    if (dropped.some((p) => p.id === selectedId)) selectedId = null;
+    savePlaced();
+    setStatus(`Removed ${dropped.length} part${dropped.length > 1 ? "s" : ""} that no longer fit on the board`, true);
+  }
   viewer.setParts(list);
   renderPartList();
 }
@@ -513,6 +528,7 @@ viewer.on("placeclick", async (ev) => {
   let g;
   try { g = await ensurePartGeo(type, partDefs[type].defaults); }
   catch (err) { setStatus(`${partDefs[type].name} failed to render: ${err.message}`, true); return; }
+  if (placingType !== type) return; // cancelled (Esc) or switched part while rendering
   const pl = placementValid(g.box, c, r, null);
   if (!pl.valid) { setStatus("That spot is off the board or already occupied", true); return; }
   const part = { id: nextPartId++, type, cell: [c, r], params: { ...partDefs[type].defaults } };
@@ -523,30 +539,40 @@ viewer.on("placeclick", async (ev) => {
   setStatus(`Placed ${partDefs[type].name} at column ${c + 1}, row ${r + 1}`);
 });
 let dragTarget = null;
-viewer.on("partdrag", (id, ev) => {
+let dragOffset = null; // grabbed cell minus the part's anchor cell, so the part moves with the pointer
+viewer.on("partdragstart", (id, ev) => {
   const p = placed.find((x) => x.id === id);
   const pt = viewer.boardPoint(ev, boardTop());
   if (!p || !pt) return;
   const [c, r] = cellAt(pt[0], pt[1], ...boardWH());
-  dragTarget = [c, r]; // the pointer cell becomes the part's anchor cell
-  ghostFor(p.type, p.params, c, r, id);
+  dragOffset = [c - p.cell[0], r - p.cell[1]];
+});
+viewer.on("partdrag", (id, ev) => {
+  const p = placed.find((x) => x.id === id);
+  const pt = viewer.boardPoint(ev, boardTop());
+  if (!p || !pt || !dragOffset) return;
+  const [c, r] = cellAt(pt[0], pt[1], ...boardWH());
+  dragTarget = [c - dragOffset[0], r - dragOffset[1]];
+  ghostFor(p.type, p.params, dragTarget[0], dragTarget[1], id);
 });
 viewer.on("partdrop", (id) => {
   const p = placed.find((x) => x.id === id);
   viewer.clearGhost();
-  if (!p || !dragTarget) return;
+  const target = dragTarget;
+  dragTarget = dragOffset = null;
+  if (!p || !target) return;
   const g = partGeo.get(partKey(p.type, p.params));
-  const pl = g ? placementValid(g.box, dragTarget[0], dragTarget[1], id) : null;
-  if (pl?.valid) { p.cell = dragTarget; savePlaced(); }
-  dragTarget = null;
+  const pl = g ? placementValid(g.box, target[0], target[1], id) : null;
+  if (pl?.valid) { p.cell = target; savePlaced(); }
   selectPart(id);
 });
-viewer.on("partclick", (id) => selectPart(id));
+viewer.on("partclick", (id) => { dragOffset = null; selectPart(id); });
 viewer.on("emptyclick", () => { if (selectedId != null) selectPart(null); });
 
 // ---- print parts --------------------------------------------------------------
 $("printParts").onclick = async () => {
   const btn = $("printParts");
+  if (!snapGeo) { setStatus("Snap model is still loading — try again in a moment", true); return; }
   btn.disabled = true;
   setStatus("Preparing parts plate…");
   try {
