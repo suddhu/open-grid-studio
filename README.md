@@ -27,3 +27,12 @@ npm run dev        # → http://localhost:3000
 - Everything else in this repo (the web app) is original.
 
 To update the generator: copy `openGrid/openGrid.scad` from QuackWorks over `scad/openGrid.scad` and record the commit in `scad/upstream/QuackWorks.commit`. Customizer groups shown in the panel are controlled by `HIDDEN_GROUPS` in `src/main.js`.
+
+## Multiconnect parts
+
+`scad/parts/` holds BlackjackDuck's Multiconnect part generators (Hook, Item Holder, Shelf) from
+QuackWorks `VerticalMountingSeries/`, rendered with `Connection_Type = "Multiconnect - openGrid"`.
+Parts are placed on cells in the 3D view (click a palette button, then a cell; drag to move; Delete
+to remove) and persisted in localStorage. "Print parts" packs every placed part plus one official
+openGrid Multiconnect Snap per slot (`parts/snaps/`, from David D's Printables release) onto plates
+sized for the selected printer and opens each in Bambu Studio. Placement geometry: `src/parts.js`.

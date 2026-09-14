@@ -120,6 +120,8 @@ export function createViewer(container) {
   const raycaster = new THREE.Raycaster();
   const HANDLE_ON = new THREE.Color(0xf28c28), HANDLE_OFF = new THREE.Color(0x5a5d6a);
   let handles = [];        // { hit: Mesh (pickable), vis: Mesh (coloured), item }
+  let placing = false;     // part placement mode (see parts layer below)
+  let partDrag = null;
   let onHandleClick = () => {};
   let hovered = null;
 
@@ -214,6 +216,7 @@ export function createViewer(container) {
   let downAt = null;
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     downAt = [ev.clientX, ev.clientY];
+    if (placing) return;
     const p = pick(ev);
     if (p?.axis && resizeCfg) {
       // Start a resize drag on the plane of the board's top face
@@ -257,10 +260,100 @@ export function createViewer(container) {
       return;
     }
     // A click, not an orbit drag: pointer moved less than a few pixels
-    if (!downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
+    if (placing || partDrag || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
     const h = pick(ev);
     if (h?.item) onHandleClick(h.item.id);
   });
+
+  // ---- placed parts, snaps and the placement ghost ------------------------------------
+  const partsGroup = new THREE.Group();
+  scene.add(partsGroup);
+  const partMaterial = new THREE.MeshStandardMaterial({ color: 0xd9d9d9, roughness: 0.6 });
+  const partSelected = new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 0.6, emissive: 0x69b1ff, emissiveIntensity: 0.35 });
+  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xbababa, roughness: 0.7 });
+  let partMeshes = [];
+  const listeners = {};
+  const on = (name, fn) => { listeners[name] = fn; };
+  const emit = (name, ...args) => listeners[name]?.(...args);
+
+  // parts: [{ id, geometry, matrix, selected, snaps: [Matrix4], snapGeometry }]
+  function setParts(parts) {
+    partsGroup.clear();
+    partMeshes = parts.map((p) => {
+      const m = new THREE.Mesh(p.geometry, p.selected ? partSelected : partMaterial);
+      m.matrixAutoUpdate = false;
+      m.matrix.copy(p.matrix);
+      m.userData.partId = p.id;
+      partsGroup.add(m);
+      for (const sm of p.snaps) {
+        const sn = new THREE.Mesh(p.snapGeometry, snapMaterial);
+        sn.matrixAutoUpdate = false;
+        sn.matrix.copy(sm);
+        partsGroup.add(sn);
+      }
+      return m;
+    });
+  }
+
+  const ghost = new THREE.Group();
+  scene.add(ghost);
+  const ghostOk = new THREE.MeshBasicMaterial({ color: 0x69b1ff, transparent: true, opacity: 0.35, depthTest: false });
+  const ghostBad = new THREE.MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.35, depthTest: false });
+  // cells: [[c, r], ...] world rectangles via centres; z: top face
+  function setGhost(cellRects, valid, geometry, matrix) {
+    ghost.clear();
+    for (const [x, y, w, h, z] of cellRects) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w - 2, h - 2), valid ? ghostOk : ghostBad);
+      m.position.set(x, y, z + 0.2);
+      m.renderOrder = 996;
+      ghost.add(m);
+    }
+    if (geometry && matrix) {
+      const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xd9d9d9, transparent: true, opacity: 0.5 }));
+      m.matrixAutoUpdate = false;
+      m.matrix.copy(matrix);
+      ghost.add(m);
+    }
+  }
+  const clearGhost = () => ghost.clear();
+
+  // Pointer position on the plane z = zPlane, in world XY (null if the ray misses)
+  function boardPoint(ev, zPlane) {
+    raycaster.setFromCamera(pointerNDC(ev), camera);
+    const pl = new THREE.Plane(new THREE.Vector3(0, 0, 1), -zPlane);
+    const pt = new THREE.Vector3();
+    return raycaster.ray.intersectPlane(pl, pt) ? [pt.x, pt.y] : null;
+  }
+  function pickPart(ev) {
+    raycaster.setFromCamera(pointerNDC(ev), camera);
+    return raycaster.intersectObjects(partMeshes, false)[0]?.object.userData.partId ?? null;
+  }
+  renderer.domElement.addEventListener("pointerdown", (ev) => {
+    if (drag || placing) return;
+    const id = pickPart(ev);
+    if (id != null) { partDrag = { id, moved: false }; controls.enabled = false; renderer.domElement.setPointerCapture(ev.pointerId); }
+  });
+  const setPlacing = (v) => { placing = v; if (!v) clearGhost(); };
+  renderer.domElement.addEventListener("pointermove", (ev) => {
+    if (partDrag) {
+      if (!partDrag.moved && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) partDrag.moved = true;
+      if (partDrag.moved) emit("partdrag", partDrag.id, ev);
+      return;
+    }
+    if (placing) { emit("placemove", ev); return; }
+  });
+  renderer.domElement.addEventListener("pointerup", (ev) => {
+    if (partDrag) {
+      const { id, moved } = partDrag;
+      partDrag = null;
+      controls.enabled = true;
+      emit(moved ? "partdrop" : "partclick", id, ev);
+      return;
+    }
+    if (placing && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4) { emit("placeclick", ev); return; }
+    if (!drag && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4 && !pick(ev)) emit("emptyclick");
+  });
+  const geometryFromStl = (buffer) => { const g = new STLLoader().parse(buffer); g.computeVertexNormals(); return g; };
 
   function viewTop() {
     const box = mesh ? mesh.geometry.boundingBox : new THREE.Box3(new THREE.Vector3(-90, -90, 0), new THREE.Vector3(90, 90, 0));
@@ -278,7 +371,9 @@ export function createViewer(container) {
     if (hsl.l < 0.08) material.color.setHSL(hsl.h, hsl.s, 0.08);
   }
 
-  return { setStl, setBed, setColor, setHandles, syncHandles, setResizeHandles, viewTop, refit: () => mesh && frame(mesh.geometry.boundingBox) };
+  return { setStl, setBed, setColor, setHandles, syncHandles, setResizeHandles, viewTop,
+    setParts, setGhost, clearGhost, setPlacing, boardPoint, geometryFromStl, on,
+    refit: () => mesh && frame(mesh.geometry.boundingBox) };
 }
 
 // Three colored axis lines with text labels; depthTest off so they show through geometry.

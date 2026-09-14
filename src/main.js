@@ -1,9 +1,14 @@
+import * as THREE from "three";
 import { parseCustomizer, toDefineArgs } from "./customizer.js";
 import { createViewer } from "./viewer.js";
 import { PRINTERS } from "./printers.js";
 import { FILAMENT_COLORS } from "./colors.js";
 import source from "../scad/openGrid.scad?raw";
 import connectorSource from "../scad/connector.scad?raw";
+import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PITCH, placePart, cellAt, cellCenter, packPlates } from "./parts.js";
+import { parseStl, bboxOf, writeStl, toArrayBuffer } from "./stl.js";
+import snapFullUrl from "../parts/snaps/mc_snap.stl?url";
+import snapLiteUrl from "../parts/snaps/mc_snap_lite.stl?url";
 
 // Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
 const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space"]);
@@ -171,6 +176,47 @@ function toggleScrew(i) {
   values.Screw_Custom_Positions = str;
 }
 
+// ---- generic Customizer field ------------------------------------------------
+// Builds one control for param p, reading/writing vals[p.name]; returns { el, set }.
+function createField(p, vals, onChange) {
+  const field = document.createElement("div");
+  field.className = "field";
+  const label = document.createElement("label");
+  label.textContent = p.name.replaceAll("_", " ");
+  field.appendChild(label);
+  const set = (v) => { vals[p.name] = v; onChange(p.name, v); };
+  let setter;
+  if (p.type === "bool") {
+    const cb = Object.assign(document.createElement("input"), { type: "checkbox", checked: !!vals[p.name] });
+    cb.onchange = () => set(cb.checked);
+    field.appendChild(cb);
+    setter = (v) => { cb.checked = !!v; vals[p.name] = v; };
+  } else if (p.type === "choice") {
+    const sel = document.createElement("select");
+    for (const o of p.options) sel.appendChild(new Option(String(o), String(o)));
+    sel.value = String(vals[p.name]);
+    sel.onchange = () => set(typeof p.value === "number" ? Number(sel.value) : sel.value);
+    field.appendChild(sel);
+    setter = (v) => { sel.value = String(v); vals[p.name] = v; };
+  } else if (p.type === "range") {
+    const num = Object.assign(document.createElement("input"), { type: "number", min: p.min, max: p.max, step: p.step, value: vals[p.name] });
+    const range = Object.assign(document.createElement("input"), { type: "range", min: p.min, max: p.max, step: p.step, value: vals[p.name] });
+    num.onchange = () => { range.value = num.value; set(Number(num.value)); };
+    range.oninput = () => { num.value = range.value; };
+    range.onchange = () => set(Number(range.value));
+    field.appendChild(num);
+    const wrap = document.createElement("div"); wrap.className = "range"; wrap.appendChild(range); field.appendChild(wrap);
+    setter = (v) => { num.value = v; range.value = v; vals[p.name] = v; };
+  } else {
+    const inp = Object.assign(document.createElement("input"), { type: p.type === "number" ? "number" : "text", value: vals[p.name] });
+    inp.onchange = () => set(p.type === "number" ? Number(inp.value) : inp.value);
+    field.appendChild(inp);
+    setter = (v) => { inp.value = v; vals[p.name] = v; };
+  }
+  if (p.description) { const d = document.createElement("small"); d.textContent = p.description; field.appendChild(d); }
+  return { el: field, set: setter };
+}
+
 // ---- parameter form ---------------------------------------------------------
 function buildForm() {
   const form = $("params");
@@ -331,6 +377,7 @@ function showResult(data) {
   updateStatus(data.ms ? `Rendered in ${(data.ms / 1000).toFixed(1)} s` : "Cached");
   $("export").disabled = false;
   syncConnectorCount();
+  refreshParts();
 }
 
 let lastRenderNote = "";
@@ -416,3 +463,257 @@ $("export").onclick = async () => {
 
 buildForm();
 fitToPlate();
+
+
+// =============================================================================
+// Multiconnect parts on the board
+// =============================================================================
+const PARTS_KEY = "opengrid.parts";
+const partDefs = Object.fromEntries(Object.entries(PART_TYPES).map(([id, t]) => {
+  const all = parseCustomizer(t.source);
+  const defaults = Object.fromEntries(all.map((p) => [p.name, p.value]));
+  Object.assign(defaults, PART_FORCED);
+  return [id, { ...t, params: all.filter((p) => !PART_HIDDEN_GROUPS.has(p.group) && !(p.name in PART_FORCED)), defaults }];
+}));
+
+let placed = [];          // [{ id, type, cell: [c, r], params }]
+let selectedId = null;
+let placingType = null;   // part type being placed, or null
+let nextPartId = 1;
+const partGeo = new Map(); // key -> { pos, box, geometry } (rendered part, in its own frame)
+const partPending = new Map();
+let snapGeo = { Full: null, Lite: null }; // { pos, box, geometry }
+
+try {
+  const saved = JSON.parse(localStorage.getItem(PARTS_KEY) || "[]");
+  placed = saved.filter((p) => partDefs[p.type]).map((p) => ({ ...p, id: nextPartId++, params: { ...partDefs[p.type].defaults, ...p.params, ...PART_FORCED } }));
+} catch {}
+const savePlaced = () => { try { localStorage.setItem(PARTS_KEY, JSON.stringify(placed.map(({ type, cell, params }) => ({ type, cell, params })))); } catch {} };
+
+const partKey = (type, params) => type + "|" + JSON.stringify(Object.entries(params).sort(([a], [b]) => (a < b ? -1 : 1)));
+
+// Render (or fetch from cache) a part's geometry; resolves { pos, box, geometry }.
+function ensurePartGeo(type, params) {
+  const key = partKey(type, params);
+  if (partGeo.has(key)) return Promise.resolve(partGeo.get(key));
+  if (partPending.has(key)) return partPending.get(key);
+  const pr = renderAux(partDefs[type].source, toDefineArgs(params)).then((data) => {
+    if (data.error) throw new Error(data.error);
+    const buf = toArrayBuffer(data.stl);
+    const pos = parseStl(buf);
+    const g = { pos, box: bboxOf(pos), geometry: viewer.geometryFromStl(buf) };
+    partGeo.set(key, g);
+    partPending.delete(key);
+    return g;
+  });
+  partPending.set(key, pr);
+  return pr;
+}
+async function loadSnaps() {
+  for (const [kind, url] of [["Full", snapFullUrl], ["Lite", snapLiteUrl]]) {
+    const buf = await fetch(url).then((r) => r.arrayBuffer());
+    const pos = parseStl(buf);
+    snapGeo[kind] = { pos, box: bboxOf(pos), geometry: viewer.geometryFromStl(buf) };
+  }
+}
+const snapKind = () => (values.Full_or_Lite === "Lite" ? "Lite" : "Full");
+const boardTop = () => (latestBox ? latestBox.max.z : 0);
+const boardWH = () => [values.Board_Width | 0, values.Board_Height | 0];
+
+// Snap sits inside the cell, flush with the face (Full 6.8 / Lite 3.4 deep)
+function snapMatrix(c, r) {
+  const [W, H] = boardWH();
+  const [x, y] = cellCenter(c, r, W, H);
+  const sg = snapGeo[snapKind()];
+  if (!sg) return null;
+  const size = sg.box.getSize(new THREE.Vector3());
+  return new THREE.Matrix4().makeTranslation(x - size.x / 2, y - size.y / 2, boardTop() - size.z);
+}
+
+function occupiedBy(excludeId) {
+  const occ = new Map();
+  for (const p of placed) {
+    if (p.id === excludeId) continue;
+    const g = partGeo.get(partKey(p.type, p.params));
+    if (!g) continue;
+    const { cells } = placePart(g.box, p.cell[0], p.cell[1], ...boardWH(), boardTop());
+    for (const k of cells) occ.set(k, p.id);
+  }
+  return occ;
+}
+function placementValid(box, c, r, excludeId) {
+  const [W, H] = boardWH();
+  const pl = placePart(box, c, r, W, H, boardTop());
+  if (!pl.inBounds) return { ...pl, valid: false };
+  const occ = occupiedBy(excludeId);
+  const valid = [...pl.cells].every((k) => !occ.has(k));
+  return { ...pl, valid };
+}
+
+async function refreshParts() {
+  if (!latestBox) return;
+  const [W, H] = boardWH();
+  const list = [];
+  for (const p of placed) {
+    let g;
+    try { g = await ensurePartGeo(p.type, p.params); } catch (err) { setStatus(`${partDefs[p.type].name} failed: ${err.message}`, true); continue; }
+    const pl = placePart(g.box, p.cell[0], p.cell[1], W, H, boardTop());
+    const sg = snapGeo[snapKind()];
+    list.push({ id: p.id, geometry: g.geometry, matrix: pl.matrix, selected: p.id === selectedId,
+      snaps: sg ? pl.snapCells.map(([c, r]) => snapMatrix(c, r)).filter(Boolean) : [], snapGeometry: sg?.geometry });
+  }
+  viewer.setParts(list);
+  renderPartList();
+}
+
+// ---- panel ------------------------------------------------------------------
+const palette = $("partPalette");
+for (const [type, def] of Object.entries(partDefs)) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = `+ ${def.name}`;
+  b.onclick = () => startPlacing(placingType === type ? null : type);
+  b.dataset.type = type;
+  palette.appendChild(b);
+}
+function startPlacing(type) {
+  placingType = type;
+  for (const b of palette.children) b.classList.toggle("active", b.dataset.type === type);
+  viewer.setPlacing(!!type);
+  if (type) { selectPart(null); ensurePartGeo(type, partDefs[type].defaults).catch(() => {}); setStatus(`Click a cell to place the ${partDefs[type].name} (Esc to cancel)`); }
+}
+function renderPartList() {
+  const ul = $("partList");
+  ul.innerHTML = "";
+  for (const p of placed) {
+    const li = document.createElement("li");
+    li.className = p.id === selectedId ? "selected" : "";
+    li.innerHTML = `<span>${partDefs[p.type].name}</span><span class="cell">col ${p.cell[0] + 1}, row ${p.cell[1] + 1}</span>`;
+    li.onclick = () => selectPart(p.id);
+    ul.appendChild(li);
+  }
+  const n = placed.length;
+  const snaps = placed.reduce((s, p) => { const g = partGeo.get(partKey(p.type, p.params)); return s + (g ? placePart(g.box, 0, 0, 99, 99, 0).n : 1); }, 0);
+  $("partsSummary").textContent = n ? `${n} part${n > 1 ? "s" : ""}, ${snaps} snap${snaps !== 1 ? "s" : ""}` : "no parts placed";
+  $("printParts").disabled = n === 0;
+}
+function selectPart(id) {
+  selectedId = id;
+  const ed = $("partEditor");
+  const p = placed.find((x) => x.id === id);
+  ed.hidden = !p;
+  if (p) {
+    $("partEditorName").textContent = partDefs[p.type].name;
+    const form = $("partParams");
+    form.innerHTML = "";
+    let group = null;
+    for (const prm of partDefs[p.type].params) {
+      if (prm.group !== group) { group = prm.group; const h = document.createElement("h2"); h.textContent = group; form.appendChild(h); }
+      form.appendChild(createField(prm, p.params, () => { savePlaced(); refreshParts(); }).el);
+    }
+  }
+  refreshParts();
+}
+$("deletePart").onclick = () => {
+  placed = placed.filter((p) => p.id !== selectedId);
+  savePlaced();
+  selectPart(null);
+};
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.matches("input, select, textarea")) return;
+  if (ev.key === "Escape") startPlacing(null);
+  if ((ev.key === "Delete" || ev.key === "Backspace") && selectedId != null) $("deletePart").onclick();
+});
+
+// ---- placement / dragging on the board ---------------------------------------
+function ghostFor(type, params, c, r, excludeId) {
+  const g = partGeo.get(partKey(type, params));
+  const [W, H] = boardWH();
+  if (!g) { // geometry still rendering: show the anchor cell only
+    const [x, y] = cellCenter(c, r, W, H);
+    viewer.setGhost([[x, y, PITCH, PITCH, boardTop()]], c >= 0 && c < W && r >= 0 && r < H);
+    return null;
+  }
+  const pl = placementValid(g.box, c, r, excludeId);
+  const rects = [...pl.cells].map((k) => { const [cc, rr] = k.split(",").map(Number); const [x, y] = cellCenter(cc, rr, W, H); return [x, y, PITCH, PITCH, boardTop()]; });
+  viewer.setGhost(rects, pl.valid, g.geometry, pl.matrix);
+  return pl;
+}
+viewer.on("placemove", (ev) => {
+  const pt = viewer.boardPoint(ev, boardTop());
+  if (!pt || !placingType) return;
+  const [c, r] = cellAt(pt[0], pt[1], ...boardWH());
+  ghostFor(placingType, partDefs[placingType].defaults, c, r, null);
+});
+viewer.on("placeclick", async (ev) => {
+  const pt = viewer.boardPoint(ev, boardTop());
+  if (!pt || !placingType) return;
+  const type = placingType;
+  const [c, r] = cellAt(pt[0], pt[1], ...boardWH());
+  const g = await ensurePartGeo(type, partDefs[type].defaults);
+  const pl = placementValid(g.box, c, r, null);
+  if (!pl.valid) { setStatus("That spot is off the board or already occupied", true); return; }
+  const part = { id: nextPartId++, type, cell: [c, r], params: { ...partDefs[type].defaults } };
+  placed.push(part);
+  savePlaced();
+  startPlacing(null);
+  selectPart(part.id);
+  setStatus(`Placed ${partDefs[type].name} at column ${c + 1}, row ${r + 1}`);
+});
+let dragTarget = null;
+viewer.on("partdrag", (id, ev) => {
+  const p = placed.find((x) => x.id === id);
+  const pt = viewer.boardPoint(ev, boardTop());
+  if (!p || !pt) return;
+  const g = partGeo.get(partKey(p.type, p.params));
+  const [c, r] = cellAt(pt[0], pt[1], ...boardWH());
+  // keep the grab offset: pointer sits over the anchor cell of the part
+  dragTarget = [c, r];
+  ghostFor(p.type, p.params, c, r, id);
+  void g;
+});
+viewer.on("partdrop", (id) => {
+  const p = placed.find((x) => x.id === id);
+  viewer.clearGhost();
+  if (!p || !dragTarget) return;
+  const g = partGeo.get(partKey(p.type, p.params));
+  const pl = g ? placementValid(g.box, dragTarget[0], dragTarget[1], id) : null;
+  if (pl?.valid) { p.cell = dragTarget; savePlaced(); }
+  dragTarget = null;
+  selectPart(id);
+});
+viewer.on("partclick", (id) => selectPart(id));
+viewer.on("emptyclick", () => { if (selectedId != null) selectPart(null); });
+
+// ---- print parts --------------------------------------------------------------
+$("printParts").onclick = async () => {
+  const btn = $("printParts");
+  btn.disabled = true;
+  setStatus("Preparing parts plate…");
+  try {
+    const items = [];
+    let snaps = 0;
+    for (const p of placed) {
+      const g = await ensurePartGeo(p.type, p.params);
+      items.push({ pos: g.pos, box: g.box });
+      snaps += placePart(g.box, 0, 0, 99, 99, 0).n;
+    }
+    const sg = snapGeo[snapKind()];
+    for (let i = 0; i < snaps; i++) items.push({ pos: sg.pos, box: sg.box });
+    const plates = packPlates(items, printer.bed);
+    for (let i = 0; i < plates.length; i++) {
+      const stl = writeStl(plates[i]);
+      const name = `opengrid_parts${plates.length > 1 ? `_plate${i + 1}` : ""}`;
+      const res = await fetch(`/api/export?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: stl });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || res.statusText);
+    }
+    setStatus(`Opened ${placed.length} part${placed.length > 1 ? "s" : ""} + ${snaps} snap${snaps !== 1 ? "s" : ""} in Bambu Studio (${plates.length} plate${plates.length > 1 ? "s" : ""})`);
+  } catch (err) {
+    setStatus(`Parts export failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = placed.length === 0;
+  }
+};
+
+loadSnaps().then(refreshParts);

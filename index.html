@@ -14,6 +14,10 @@
         <button id="export" class="primary" disabled>Open in Bambu Studio</button>
       </div>
       <div class="connectors">
+        <button id="printParts" disabled>Print parts</button>
+        <span id="partsSummary">no parts placed</span>
+      </div>
+      <div class="connectors">
         <button id="printConnectors">Print</button>
         <select id="connectorCount" aria-label="Number of connectors"></select>
         <span>connectors</span>
@@ -23,6 +27,16 @@
     <section id="colorPanel">
       <h2>Filament <span id="colorName"></span></h2>
       <div id="colors"></div>
+    </section>
+    <section id="partsPanel">
+      <h2>Parts</h2>
+      <p class="hint">Add a Multiconnect part, then click a cell on the board to place it. Drag to move, click to select, Delete to remove.</p>
+      <div id="partPalette"></div>
+      <ul id="partList"></ul>
+      <div id="partEditor" hidden>
+        <div class="partEditorHead"><strong id="partEditorName"></strong><button id="deletePart" type="button">Delete</button></div>
+        <form id="partParams"></form>
+      </div>
     </section>
     <form id="params"></form>
     <footer>
