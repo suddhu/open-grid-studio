@@ -9,6 +9,7 @@ import binSrc from "../scad/parts/MulticonnectBin.scad?raw";
 import roundHolderSrc from "../scad/parts/MultiConnectRoundSingleHolder.scad?raw";
 import roundRowSrc from "../scad/parts/MultiConnectRoundRow.scad?raw";
 import roundHookSrc from "../scad/parts/MultiConnectRoundHook.scad?raw";
+import spoolSrc from "../scad/parts/SpoolHolder.scad?raw";
 
 export const PITCH = 28;
 export const SLOT_STOP = 13; // Multiconnect_Stop_Distance_From_Back: snap centre sits 13 mm below the plate top
@@ -23,6 +24,7 @@ export const PART_TYPES = {
   // Round Hook predates the openGrid option; its slot spacing is a plain variable we override to 28.
   // Its default edge rounding (r = 2.3) uses minkowski() and crashes CGAL in wasm; r = 1 renders fine.
   roundHook:   { name: "Round Hook",   source: roundHookSrc, forced: { distanceBetweenSlots: 28 }, defaults: { r: 1 } },
+  spool:       { name: "Spool Holder", source: spoolSrc }, // ours: peg for filament spools (see the file header)
 };
 // Customizer groups the panel hides for parts (mounting is forced to openGrid; slot tuning is fine detail)
 export const PART_HIDDEN_GROUPS = new Set(["Mounting Parameters", "Mounting Surface", "Slot Types", "Slot Customization",
