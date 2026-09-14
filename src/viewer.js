@@ -2,6 +2,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
 export function createViewer(container) {
   const scene = new THREE.Scene();
@@ -120,28 +123,27 @@ export function createViewer(container) {
   let onHandleClick = () => {};
   let hovered = null;
 
-  // items: [{ id, anchor: [x,y,z] (the feature), tip: [x,y,z] (where the marker sits), on, enabled, label }]
-  // Each handle is a leader line from the feature to a small sphere; both are clickable.
+  // items: [{ id, outline: [[x,y],...] (closed loop on the top face), z, on, enabled, label }]
+  // Each handle is a fat outline drawn on the mesh; the filled region inside it is the click target.
+  const HANDLE_HOVER = new THREE.Color(0xffffff);
   function setHandles(items, onClick) {
     onHandleClick = onClick;
     handleGroup.clear();
     handles = items.map((it) => {
-      const a = new THREE.Vector3(...it.anchor), t = new THREE.Vector3(...it.tip);
-      const mat = new THREE.MeshStandardMaterial({ color: HANDLE_OFF, roughness: 0.4, transparent: true });
-      const lineMat = new THREE.LineBasicMaterial({ color: HANDLE_OFF, transparent: true });
-      const group = new THREE.Group();
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, t]), lineMat);
-      const sphere = new THREE.Mesh(new THREE.SphereGeometry(2.4, 16, 12), mat);
-      sphere.position.copy(t);
-      // Invisible thicker cylinder along the leader so the line itself is easy to click
-      const dir = t.clone().sub(a), len = dir.length();
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, len, 6), new THREE.MeshBasicMaterial({ visible: false }));
-      stem.position.copy(a).addScaledVector(dir, 0.5);
-      stem.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-      group.add(line, sphere, stem);
-      handleGroup.add(group);
-      const h = { hit: [sphere, stem], vis: sphere, line, item: it };
-      sphere.userData.handle = stem.userData.handle = h;
+      const pts = it.outline.flatMap(([x, y]) => [x, y, it.z]);
+      pts.push(it.outline[0][0], it.outline[0][1], it.z); // close the loop
+      const geom = new LineGeometry().setPositions(pts);
+      const mat = new LineMaterial({ color: HANDLE_OFF.getHex(), linewidth: 0.9, worldUnits: true, depthTest: false, transparent: true });
+      const line = new Line2(geom, mat);
+      line.computeLineDistances();
+      line.renderOrder = 997;
+      // Invisible fill for hit-testing
+      const shape = new THREE.Shape(it.outline.map(([x, y]) => new THREE.Vector2(x, y)));
+      const fill = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ visible: false }));
+      fill.position.z = it.z;
+      handleGroup.add(line, fill);
+      const h = { hit: [fill], line, item: it };
+      fill.userData.handle = h;
       return h;
     });
     syncHandles(items);
@@ -149,12 +151,8 @@ export function createViewer(container) {
   function syncHandles(items) {
     for (const h of handles) {
       h.item = items.find((i) => i.id === h.item.id) ?? h.item;
-      const color = h.item.on ? HANDLE_ON : HANDLE_OFF, opacity = h.item.enabled === false ? 0.3 : 1;
-      h.vis.material.color.copy(color);
-      h.vis.material.opacity = opacity;
-      h.vis.material.emissive.set(0x000000);
-      h.line.material.color.copy(color);
-      h.line.material.opacity = opacity;
+      h.line.material.color.copy(h.item.on ? HANDLE_ON : HANDLE_OFF);
+      h.line.material.opacity = h.item.enabled === false ? 0.3 : 1;
     }
   }
   function pointerNDC(ev) {
@@ -242,9 +240,9 @@ export function createViewer(container) {
     }
     const h = pick(ev);
     if (h !== hovered) {
-      hovered?.vis?.material.emissive.set(0x000000);
+      if (hovered?.line) hovered.line.material.color.copy(hovered.item.on ? HANDLE_ON : HANDLE_OFF);
       hovered = h;
-      if (h?.vis) h.vis.material.emissive.set(0x333333);
+      if (h?.line) h.line.material.color.copy(HANDLE_HOVER);
       renderer.domElement.style.cursor = h ? (h.axis ? (h.axis === "x" ? "ew-resize" : "ns-resize") : "pointer") : "";
       renderer.domElement.title = h ? (h.item?.label ?? h.label ?? "") : "";
     }

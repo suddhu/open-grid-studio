@@ -84,38 +84,42 @@ const syncHandles = () => viewer.syncHandles(handleItems(latestBox));
 
 // 3D handle positions for the current model: corners and edge pills floating outside the board,
 // screw rings over each interior intersection. Same variables the generator reads.
+// Outlines drawn on the top face, one per toggleable feature:
+//  corner  -> the chamfer triangle (the generator cuts a 45° square of side 4.2·√2, i.e. 4.2 mm legs;
+//             drawn a little larger so it is easy to hit)
+//  edge    -> a strip along the edge where the connector cutouts sit
+//  screw   -> a circle around the hole (head diameter 7.2)
 function handleItems(box) {
   if (!box) return [];
   const { min, max } = box;
-  const cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2, top = max.z;
+  const cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2, z = max.z + 0.15;
   const edgesOn = values.Connector_Holes !== false, cornersOn = values.Chamfers !== "None";
-  // Leader lines: from the feature on the board out along a direction to a small sphere.
-  const L = 16, UP = 10;
-  const mk = (id, anchor, dir, on, enabled, label) => ({
-    id, on, enabled, label, anchor,
-    tip: [anchor[0] + dir[0] * L, anchor[1] + dir[1] * L, anchor[2] + UP],
-  });
-  const c = (id, x, y, dx, dy, label) => mk(id, [x, y, top], [dx * 0.7, dy * 0.7], !!values[id], cornersOn, label);
-  const e = (id, x, y, dx, dy, label) => mk(id, [x, y, top], [dx, dy], !!values[id], edgesOn, label);
+  const LEG = 9, STRIP = 7, R = 5;
+  const tri = (id, x, y, sx, sy, label) => ({ id, z, on: !!values[id], enabled: cornersOn, label,
+    outline: [[x, y], [x - sx * LEG, y], [x, y - sy * LEG]] });
+  const strip = (id, x0, y0, x1, y1, label) => ({ id, z, on: !!values[id], enabled: edgesOn, label,
+    outline: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] });
+  const circle = (x, y) => Array.from({ length: 24 }, (_, k) => [x + R * Math.cos((k / 24) * 2 * Math.PI), y + R * Math.sin((k / 24) * 2 * Math.PI)]);
   const { cols, rows } = screwGrid();
   const on = screwPattern();
   const screws = [];
   for (let r = 0; r < rows; r++) for (let cI = 0; cI < cols; cI++) {
     const i = r * cols + cI;
     const x = cx - (cols - 1) * 14 + cI * 28, y = cy + (rows - 1) * 14 - r * 28;
-    screws.push({ id: `screw:${i}`, on: on.has(i), enabled: true, anchor: [x, y, top], tip: [x, y, top + 12],
+    screws.push({ id: `screw:${i}`, z, on: on.has(i), enabled: true, outline: circle(x, y),
       label: `Screw hole (row ${r + 1}, column ${cI + 1})` });
   }
+  const inset = 14; // keep edge strips clear of the corner triangles
   return [
     ...screws,
-    c(SPATIAL.corners.TL, min.x, max.y, -1, 1, "Chamfer: top-left corner"),
-    c(SPATIAL.corners.TR, max.x, max.y, 1, 1, "Chamfer: top-right corner"),
-    c(SPATIAL.corners.BL, min.x, min.y, -1, -1, "Chamfer: bottom-left corner"),
-    c(SPATIAL.corners.BR, max.x, min.y, 1, -1, "Chamfer: bottom-right corner"),
-    e(SPATIAL.edges.T, cx, max.y, 0, 1, "Connector holes: top edge"),
-    e(SPATIAL.edges.B, cx, min.y, 0, -1, "Connector holes: bottom edge"),
-    e(SPATIAL.edges.L, min.x, cy, -1, 0, "Connector holes: left edge"),
-    e(SPATIAL.edges.R, max.x, cy, 1, 0, "Connector holes: right edge"),
+    tri(SPATIAL.corners.TL, min.x, max.y, -1, 1, "Chamfer: top-left corner"),
+    tri(SPATIAL.corners.TR, max.x, max.y, 1, 1, "Chamfer: top-right corner"),
+    tri(SPATIAL.corners.BL, min.x, min.y, -1, -1, "Chamfer: bottom-left corner"),
+    tri(SPATIAL.corners.BR, max.x, min.y, 1, -1, "Chamfer: bottom-right corner"),
+    strip(SPATIAL.edges.T, min.x + inset, max.y - STRIP, max.x - inset, max.y, "Connector holes: top edge"),
+    strip(SPATIAL.edges.B, min.x + inset, min.y, max.x - inset, min.y + STRIP, "Connector holes: bottom edge"),
+    strip(SPATIAL.edges.L, min.x, min.y + inset, min.x + STRIP, max.y - inset, "Connector holes: left edge"),
+    strip(SPATIAL.edges.R, max.x - STRIP, min.y + inset, max.x, max.y - inset, "Connector holes: right edge"),
   ];
 }
 
@@ -178,8 +182,8 @@ function buildForm() {
       const h = document.createElement("h2");
       h.textContent = group;
       form.appendChild(h);
-      if (group.startsWith("Chamfer")) hint("Click the corner and edge markers on the model to toggle chamfers and connector holes.");
-      if (group.startsWith("Screw")) hint("Click the rings on the model to add or remove screw holes.");
+      if (group.startsWith("Chamfer")) hint("Click a corner or edge outline on the model to toggle its chamfer or connector holes.");
+      if (group.startsWith("Screw")) hint("Click a circle on the model to add or remove a screw hole.");
       if (group.startsWith("Board")) hint("Drag the blue arrows on the model to change the board size.");
     }
     const field = document.createElement("div");
