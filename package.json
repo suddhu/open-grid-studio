@@ -12,6 +12,7 @@
   "dependencies": {
     "@lofcz/openscad-wasm": "^0.0.2",
     "express": "^5.2.1",
+    "jszip": "^3.10.2",
     "three": "^0.186.0"
   },
   "devDependencies": {

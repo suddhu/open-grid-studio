@@ -4,8 +4,9 @@ import { createViewer } from "./viewer.js";
 import { PRINTERS } from "./printers.js";
 import source from "../scad/openGrid.scad?raw";
 import connectorSource from "../scad/connector.scad?raw";
-import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PITCH, placePart, slotCount, cellAt, cellCenter, packPlates, transformed } from "./parts.js";
-import { writeStl, toArrayBuffer } from "./stl.js";
+import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PRINT_DEFAULTS, PRINT_BOARD, PRINT_SNAP, PRINT_CONNECTOR, PITCH, placePart, slotCount, cellAt, cellCenter, packPlates, transformed } from "./parts.js";
+import { toArrayBuffer } from "./stl.js";
+import { write3mf } from "./threemf.js";
 import snapUrl from "../parts/snaps/mc_snap.stl?url";
 
 // Board options are fixed (Full tile, corner chamfers, connector holes on every edge, 4 corner
@@ -265,11 +266,7 @@ $("printConnectors").onclick = async () => {
   try {
     const data = await renderAux(connectorSource, ["-D", `Count=${n}`]);
     if (data.error) throw new Error(data.error);
-    const res = await fetch(`/api/export?name=${encodeURIComponent(`opengrid_connectors_x${n}`)}`, {
-      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: data.stl,
-    });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || res.statusText);
+    await sendToBambu(`opengrid_connectors_x${n}`, [{ name: `openGrid connectors ×${n}`, pos: meshData(toArrayBuffer(data.stl)).pos, settings: PRINT_CONNECTOR }]);
     setStatus(`Opened ${n} connectors in Bambu Studio`);
   } catch (err) {
     setStatus(`Connector export failed: ${err.message}`, true);
@@ -279,19 +276,24 @@ $("printConnectors").onclick = async () => {
   }
 };
 
+// Build a Bambu 3MF (objects carry their print settings) and hand it to Bambu Studio.
+async function sendToBambu(name, objects) {
+  const file = await write3mf(objects);
+  const res = await fetch(`/api/export?name=${encodeURIComponent(name)}&ext=3mf`, {
+    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body.path;
+}
+
 $("export").onclick = async () => {
   if (!latestStl) return;
-  const name = `opengrid_${values.Full_or_Lite}_${values.Board_Width}x${values.Board_Height}`.toLowerCase();
+  const [W, H] = boardWH();
   setStatus("Sending board to Bambu Studio…");
   try {
-    const res = await fetch(`/api/export?name=${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/octet-stream" },
-      body: latestStl,
-    });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || res.statusText);
-    setStatus(`Opened board in Bambu Studio (${body.path})`);
+    const path = await sendToBambu(`opengrid_board_${W}x${H}`, [{ name: `openGrid board ${W}×${H}`, pos: meshData(toArrayBuffer(latestStl)).pos, settings: PRINT_BOARD }]);
+    setStatus(`Opened board in Bambu Studio (${path})`);
   } catch (err) {
     setStatus(`Export failed: ${err.message}`, true);
   }
@@ -579,18 +581,16 @@ $("printParts").onclick = async () => {
     const geos = await Promise.all(placed.map((p) => ensurePartGeo(p.type, p.params)));
     // Parts print in their modelled orientation unless the catalogue gives a print rotation
     const items = geos.map((g, i) => {
-      const rot = partDefs[placed[i].type].printRotation;
-      return rot ? transformed(g.pos, rot) : { pos: g.pos, box: g.box };
+      const def = partDefs[placed[i].type];
+      const m = def.printRotation ? transformed(g.pos, def.printRotation) : { pos: g.pos, box: g.box };
+      return { ...m, name: def.name, settings: { ...PRINT_DEFAULTS, ...(def.print || {}) } };
     });
     const snaps = geos.reduce((n, g) => n + slotCount(g.box), 0);
-    for (let i = 0; i < snaps; i++) items.push({ pos: snapGeo.pos, box: snapGeo.box });
+    for (let i = 0; i < snaps; i++) items.push({ pos: snapGeo.pos, box: snapGeo.box, name: "Multiconnect snap", settings: PRINT_SNAP });
     const plates = packPlates(items, printer.bed);
     for (let i = 0; i < plates.length; i++) {
-      const stl = writeStl(plates[i]);
-      const name = `opengrid_parts${plates.length > 1 ? `_plate${i + 1}` : ""}`;
-      const res = await fetch(`/api/export?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: stl });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || res.statusText);
+      const objects = plates[i].map((it) => ({ name: it.name, settings: it.settings, pos: transformed(it.pos, it.matrix).pos }));
+      await sendToBambu(`opengrid_parts${plates.length > 1 ? `_plate${i + 1}` : ""}`, objects);
     }
     setStatus(`Opened ${placed.length} part${placed.length > 1 ? "s" : ""} + ${snaps} snap${snaps !== 1 ? "s" : ""} in Bambu Studio (${plates.length} plate${plates.length > 1 ? "s" : ""})`);
   } catch (err) {

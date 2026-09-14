@@ -18,7 +18,7 @@ npm run dev        # → http://localhost:3000
 | Parameter UI | `src/customizer.js`, `src/main.js` | Parses `/* [Group] */`, `// description`, `// [a, b]`, `// [min:step:max]` and builds the form. |
 | Rendering | `src/worker.js` | `@lofcz/openscad-wasm` (Manifold backend) in a Web Worker → binary STL. BOSL2 (`vendor/BOSL2`, BSD-2) is written into the wasm filesystem so `include <BOSL2/std.scad>` resolves. ~7 s per render, dominated by OpenSCAD evaluating BOSL2. |
 | Preview | `src/viewer.js` | three.js + OrbitControls + STLLoader. |
-| Export | `server.mjs` | `POST /api/export` writes `exports/<name>.stl` and runs `open -a BambuStudio <file>`. Set `BAMBU_APP` if your app name differs. |
+| Export | `server.mjs`, `src/threemf.js` | Exports are Bambu 3MF project files: each object carries print settings (layer height, walls, infill, supports) in `Metadata/model_settings.config`, which Bambu Studio applies as object-level overrides. `POST /api/export` writes `exports/<name>.3mf` and runs `open -a BambuStudio <file>`. Filament (PLA) and printer stay on your global selection. |
 
 ## Licensing
 

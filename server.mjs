@@ -13,7 +13,8 @@ const app = express();
 
 app.post("/api/export", express.raw({ type: "*/*", limit: "200mb" }), async (req, res) => {
   const name = String(req.query.name || "model").replace(/[^\w.-]/g, "_");
-  const file = path.join(EXPORT_DIR, `${name}.stl`);
+  const ext = req.query.ext === "3mf" ? "3mf" : "stl";
+  const file = path.join(EXPORT_DIR, `${name}.${ext}`);
   try {
     await mkdir(EXPORT_DIR, { recursive: true });
     await writeFile(file, req.body);

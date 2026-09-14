@@ -25,12 +25,19 @@ export const PART_TYPES = {
   // Its default edge rounding (r = 2.3) uses minkowski() and crashes CGAL in wasm; r = 1 renders fine.
   roundHook:   { name: "Round Hook",   source: roundHookSrc, forced: { distanceBetweenSlots: 28 }, defaults: { r: 1 } },
   // ours: peg for filament spools (see the file header). Prints back-plate-down so the peg stands up.
-  spool:       { name: "Spool Holder", source: spoolSrc, printRotation: new THREE.Matrix4().makeRotationX(Math.PI / 2) },
+  spool:       { name: "Spool Holder", source: spoolSrc, printRotation: new THREE.Matrix4().makeRotationX(Math.PI / 2),
+                 print: { wall_loops: 5, sparse_infill_density: "30%", sparse_infill_pattern: "gyroid" } },
 };
 // Customizer groups the panel hides for parts (mounting is forced to openGrid; slot tuning is fine detail)
 export const PART_HIDDEN_GROUPS = new Set(["Mounting Parameters", "Mounting Surface", "Slot Types", "Slot Customization",
   "GOEWS Customization", "Performance", "Hidden", "Advanced"]);
 export const PART_FORCED = { Connection_Type: "Multiconnect - openGrid" };
+
+// Bambu Studio per-object print settings (PLA). Parts may override via `print` in PART_TYPES.
+export const PRINT_DEFAULTS = { layer_height: "0.2", wall_loops: 3, sparse_infill_density: "20%", enable_support: 0 };
+export const PRINT_BOARD = { ...PRINT_DEFAULTS, sparse_infill_density: "15%" };
+export const PRINT_SNAP = { ...PRINT_DEFAULTS };
+export const PRINT_CONNECTOR = { ...PRINT_DEFAULTS, wall_loops: 4 };
 
 // All generators share one frame: x centred on the part, back plate at y ∈ [-t, 0] (the board is
 // at -y), z = up the wall. World frame: board face on z = top, +y = up the wall.
@@ -100,7 +107,7 @@ export function packPlates(items, bed, gap = 5) {
     if (x + w > bw) { x = 0; y += rowH + gap; rowH = 0; }
     if (y + h > bh) newPlate();
     const m = new THREE.Matrix4().makeTranslation(x - it.box.min.x - bw / 2, y - it.box.min.y - bh / 2, -it.box.min.z);
-    plate.push({ pos: it.pos, matrix: m });
+    plate.push({ ...it, matrix: m });
     x += w + gap; rowH = Math.max(rowH, h);
   }
   newPlate();
