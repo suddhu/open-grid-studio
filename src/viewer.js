@@ -268,9 +268,10 @@ export function createViewer(container) {
   // ---- placed parts, snaps and the placement ghost ------------------------------------
   const partsGroup = new THREE.Group();
   scene.add(partsGroup);
-  const partMaterial = new THREE.MeshStandardMaterial({ color: 0xd9d9d9, roughness: 0.6 });
-  const partSelected = new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 0.6, emissive: 0x69b1ff, emissiveIntensity: 0.35 });
-  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xbababa, roughness: 0.7 });
+  const PART_COLOR = 0xf2a93b; // amber: complementary to the steel-blue board
+  const partMaterial = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6 });
+  const partSelected = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.25 });
+  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xc9861f, roughness: 0.7 }); // darker amber
   let partMeshes = [];
   const listeners = {};
   const on = (name, fn) => { listeners[name] = fn; };
@@ -309,7 +310,7 @@ export function createViewer(container) {
       ghost.add(m);
     }
     if (geometry && matrix) {
-      const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xd9d9d9, transparent: true, opacity: 0.5 }));
+      const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: PART_COLOR, transparent: true, opacity: 0.5 }));
       m.matrixAutoUpdate = false;
       m.matrix.copy(matrix);
       ghost.add(m);
