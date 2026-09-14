@@ -87,33 +87,35 @@ const syncHandles = () => viewer.syncHandles(handleItems(latestBox));
 function handleItems(box) {
   if (!box) return [];
   const { min, max } = box;
-  // Handles float outside the board so they don't crowd the mesh: corners/edges 12 mm out and
-  // 6 mm up, screw rings 3 mm above the face.
-  const OUT = 12, UP = 6;
-  const z = max.z + UP, cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2;
-  const x0 = min.x - OUT, x1 = max.x + OUT, y0 = min.y - OUT, y1 = max.y + OUT;
+  const cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2, top = max.z;
   const edgesOn = values.Connector_Holes !== false, cornersOn = values.Chamfers !== "None";
-  const c = (id, x, y, label) => ({ id, kind: "corner", position: [x, y, z], on: !!values[id], enabled: cornersOn, label });
-  const e = (id, x, y, rot, label) => ({ id, kind: "edge", position: [x, y, z], rotation: rot, on: !!values[id], enabled: edgesOn, label });
+  // Leader lines: from the feature on the board out along a direction to a small sphere.
+  const L = 16, UP = 10;
+  const mk = (id, anchor, dir, on, enabled, label) => ({
+    id, on, enabled, label, anchor,
+    tip: [anchor[0] + dir[0] * L, anchor[1] + dir[1] * L, anchor[2] + UP],
+  });
+  const c = (id, x, y, dx, dy, label) => mk(id, [x, y, top], [dx * 0.7, dy * 0.7], !!values[id], cornersOn, label);
+  const e = (id, x, y, dx, dy, label) => mk(id, [x, y, top], [dx, dy], !!values[id], edgesOn, label);
   const { cols, rows } = screwGrid();
   const on = screwPattern();
   const screws = [];
   for (let r = 0; r < rows; r++) for (let cI = 0; cI < cols; cI++) {
     const i = r * cols + cI;
-    screws.push({ id: `screw:${i}`, kind: "screw", on: on.has(i), enabled: true,
-      position: [cx - (cols - 1) * 14 + cI * 28, cy + (rows - 1) * 14 - r * 28, max.z + 3],
+    const x = cx - (cols - 1) * 14 + cI * 28, y = cy + (rows - 1) * 14 - r * 28;
+    screws.push({ id: `screw:${i}`, on: on.has(i), enabled: true, anchor: [x, y, top], tip: [x, y, top + 12],
       label: `Screw hole (row ${r + 1}, column ${cI + 1})` });
   }
   return [
     ...screws,
-    c(SPATIAL.corners.TL, x0, y1, "Chamfer: top-left corner"),
-    c(SPATIAL.corners.TR, x1, y1, "Chamfer: top-right corner"),
-    c(SPATIAL.corners.BL, x0, y0, "Chamfer: bottom-left corner"),
-    c(SPATIAL.corners.BR, x1, y0, "Chamfer: bottom-right corner"),
-    e(SPATIAL.edges.T, cx, y1, Math.PI / 2, "Connector holes: top edge"),
-    e(SPATIAL.edges.B, cx, y0, Math.PI / 2, "Connector holes: bottom edge"),
-    e(SPATIAL.edges.L, x0, cy, 0, "Connector holes: left edge"),
-    e(SPATIAL.edges.R, x1, cy, 0, "Connector holes: right edge"),
+    c(SPATIAL.corners.TL, min.x, max.y, -1, 1, "Chamfer: top-left corner"),
+    c(SPATIAL.corners.TR, max.x, max.y, 1, 1, "Chamfer: top-right corner"),
+    c(SPATIAL.corners.BL, min.x, min.y, -1, -1, "Chamfer: bottom-left corner"),
+    c(SPATIAL.corners.BR, max.x, min.y, 1, -1, "Chamfer: bottom-right corner"),
+    e(SPATIAL.edges.T, cx, max.y, 0, 1, "Connector holes: top edge"),
+    e(SPATIAL.edges.B, cx, min.y, 0, -1, "Connector holes: bottom edge"),
+    e(SPATIAL.edges.L, min.x, cy, -1, 0, "Connector holes: left edge"),
+    e(SPATIAL.edges.R, max.x, cy, 1, 0, "Connector holes: right edge"),
   ];
 }
 

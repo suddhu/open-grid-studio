@@ -120,28 +120,28 @@ export function createViewer(container) {
   let onHandleClick = () => {};
   let hovered = null;
 
-  // items: [{ id, kind: "corner"|"edge"|"screw", position: [x,y,z], rotation?: number, on, enabled, label }]
+  // items: [{ id, anchor: [x,y,z] (the feature), tip: [x,y,z] (where the marker sits), on, enabled, label }]
+  // Each handle is a leader line from the feature to a small sphere; both are clickable.
   function setHandles(items, onClick) {
     onHandleClick = onClick;
     handleGroup.clear();
     handles = items.map((it) => {
+      const a = new THREE.Vector3(...it.anchor), t = new THREE.Vector3(...it.tip);
       const mat = new THREE.MeshStandardMaterial({ color: HANDLE_OFF, roughness: 0.4, transparent: true });
-      let vis, hit;
-      if (it.kind === "corner") {
-        vis = hit = new THREE.Mesh(new THREE.SphereGeometry(4, 20, 14), mat);
-      } else if (it.kind === "edge") {
-        vis = hit = new THREE.Mesh(new THREE.CapsuleGeometry(2.2, 14, 6, 12), mat);
-        vis.rotation.z = it.rotation ?? 0; // capsule is Y-aligned; rotate to run along the edge
-      } else {
-        // Ring around the hole; a torus has a hole in the middle, so pick against an invisible disc.
-        vis = new THREE.Mesh(new THREE.TorusGeometry(3.6, 1.1, 10, 24), mat);
-        hit = new THREE.Mesh(new THREE.CircleGeometry(5, 16), new THREE.MeshBasicMaterial({ visible: false }));
-        vis.add(hit);
-      }
-      vis.position.set(...it.position);
-      handleGroup.add(vis);
-      const h = { hit, vis, item: it };
-      hit.userData.handle = h;
+      const lineMat = new THREE.LineBasicMaterial({ color: HANDLE_OFF, transparent: true });
+      const group = new THREE.Group();
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, t]), lineMat);
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(2.4, 16, 12), mat);
+      sphere.position.copy(t);
+      // Invisible thicker cylinder along the leader so the line itself is easy to click
+      const dir = t.clone().sub(a), len = dir.length();
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, len, 6), new THREE.MeshBasicMaterial({ visible: false }));
+      stem.position.copy(a).addScaledVector(dir, 0.5);
+      stem.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      group.add(line, sphere, stem);
+      handleGroup.add(group);
+      const h = { hit: [sphere, stem], vis: sphere, line, item: it };
+      sphere.userData.handle = stem.userData.handle = h;
       return h;
     });
     syncHandles(items);
@@ -149,9 +149,12 @@ export function createViewer(container) {
   function syncHandles(items) {
     for (const h of handles) {
       h.item = items.find((i) => i.id === h.item.id) ?? h.item;
-      h.vis.material.color.copy(h.item.on ? HANDLE_ON : HANDLE_OFF);
-      h.vis.material.opacity = h.item.enabled === false ? 0.3 : 1;
+      const color = h.item.on ? HANDLE_ON : HANDLE_OFF, opacity = h.item.enabled === false ? 0.3 : 1;
+      h.vis.material.color.copy(color);
+      h.vis.material.opacity = opacity;
       h.vis.material.emissive.set(0x000000);
+      h.line.material.color.copy(color);
+      h.line.material.opacity = opacity;
     }
   }
   function pointerNDC(ev) {
@@ -160,7 +163,7 @@ export function createViewer(container) {
   }
   function pick(ev) {
     raycaster.setFromCamera(pointerNDC(ev), camera);
-    const hit = raycaster.intersectObjects([...handles.map((h) => h.hit), ...resizeArrows], false)[0]?.object;
+    const hit = raycaster.intersectObjects([...handles.flatMap((h) => h.hit), ...resizeArrows], false)[0]?.object;
     return hit?.userData.handle ?? hit?.userData.resize ?? null;
   }
 
