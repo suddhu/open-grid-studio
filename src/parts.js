@@ -35,7 +35,8 @@ export const PART_FORCED = { Connection_Type: "Multiconnect - openGrid" };
 
 // Bambu Studio per-object print settings (PLA). Parts may override via `print` in PART_TYPES.
 export const PRINT_DEFAULTS = { layer_height: "0.2", wall_loops: 3, sparse_infill_density: "20%", enable_support: 0 };
-export const PRINT_BOARD = { ...PRINT_DEFAULTS, sparse_infill_density: "15%" };
+// Board: wide flat lattice, warp-prone at the corners -> outer brim for adhesion
+export const PRINT_BOARD = { ...PRINT_DEFAULTS, sparse_infill_density: "15%", brim_type: "outer_only", brim_width: "5" };
 export const PRINT_SNAP = { ...PRINT_DEFAULTS };
 export const PRINT_CONNECTOR = { ...PRINT_DEFAULTS, wall_loops: 4 };
 
