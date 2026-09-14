@@ -8,13 +8,20 @@ import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PITCH, placePart, cellAt, 
 import { parseStl, bboxOf, writeStl, toArrayBuffer } from "./stl.js";
 import snapUrl from "../parts/snaps/mc_snap.stl?url";
 
+// Corner / edge variable names of the generator (fixed on, kept in values so -D passes them).
+const SPATIAL = {
+  corners: { TL: "Chamfer_Top_Left", TR: "Chamfer_Top_Right", BL: "Chamfer_Bottom_Left", BR: "Chamfer_Bottom_Right" },
+  edges: { T: "Connector_Holes_Top", B: "Connector_Holes_Bottom", L: "Connector_Holes_Left", R: "Connector_Holes_Right" },
+};
+
 // Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
-const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space", "Adhesive Base Options"]);
+const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space", "Adhesive Base Options", "Chamfer and Connector Options", "Screw Options"]);
 // Full boards only (Lite/Heavy are hidden; Adhesive Base is a Lite-only option)
-const FORCED = { Full_or_Lite: "Full", Connector_Holes: true }; // connector holes always on; per-edge toggles live on the model
+// Fixed board options: Full tile, connector holes on every edge, corners chamfered, 4 corner screw holes.
+const FORCED = { Full_or_Lite: "Full", Connector_Holes: true, Chamfers: "Corners", Screw_Mounting: "Corners" };
 // Individual fine-tuning variables hidden from the panel (defaults suit M4 / #8 screws).
 const HIDDEN_PARAMS = new Set([
-  "Full_or_Lite", "Connector_Holes",
+  "Full_or_Lite", "Connector_Holes", "Chamfers", ...Object.values(SPATIAL.corners), ...Object.values(SPATIAL.edges),
   "Board_Width", "Board_Height", "Screw_Mounting", // edited on the model (drag arrows / click rings)
   "Screw_Every_X_Rows", "Screw_Every_X_Columns", "Screw_Diameter", "Screw_Head_Diameter",
   "Screw_Head_Inset", "Screw_Head_Is_CounterSunk", "Screw_Head_CounterSunk_Degree",
@@ -24,7 +31,8 @@ const $ = (id) => document.getElementById(id);
 const viewer = createViewer($("viewer"));
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
-const allParams = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group));
+const KEEP_VALUES = new Set(["Chamfers", "Connector_Holes", "Screw_Mounting", ...Object.values(SPATIAL.corners), ...Object.values(SPATIAL.edges)]);
+const allParams = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group) || KEEP_VALUES.has(p.name));
 const params = allParams.filter((p) => !HIDDEN_PARAMS.has(p.name)); // shown in the form
 const values = Object.assign(Object.fromEntries(allParams.map((p) => [p.name, p.value])), FORCED); // includes on-model ones
 window.__values = values; // debugging aid: inspect current parameters from the console
@@ -62,10 +70,6 @@ viewer.setColor(BOARD_COLOR);
 // ---- on-model handles -------------------------------------------------------
 // Per-corner / per-edge booleans and screw positions are edited by clicking handles on the 3D
 // model rather than via form fields. These map handle positions to Customizer variable names.
-const SPATIAL = {
-  corners: { TL: "Chamfer_Top_Left", TR: "Chamfer_Top_Right", BL: "Chamfer_Bottom_Left", BR: "Chamfer_Bottom_Right" },
-  edges: { T: "Connector_Holes_Top", B: "Connector_Holes_Bottom", L: "Connector_Holes_Left", R: "Connector_Holes_Right" },
-};
 // Variables edited on the model, hidden from the form.
 const ON_MODEL = new Set([...Object.values(SPATIAL.corners), ...Object.values(SPATIAL.edges), "Screw_Custom_Positions"]);
 const syncHandles = () => viewer.syncHandles(handleItems(latestBox));
@@ -97,10 +101,10 @@ function handleItems(box) {
     screws.push({ id: `screw:${i}`, z, on: on.has(i), enabled: true, outline: circle(x, y),
       label: `Screw hole (row ${r + 1}, column ${cI + 1})` });
   }
-  // Corner chamfers and edge connector holes are always on (their outlines were removed);
-  // only screw holes are toggled on the model.
-  void tri; void strip; void edgesOn; void cornersOn;
-  return screws;
+  // All board features are fixed now (corner chamfers, edge connector holes, 4 corner screws);
+  // nothing is toggled on the model any more.
+  void tri; void strip; void edgesOn; void cornersOn; void screws;
+  return [];
 }
 
 // ---- screw holes ------------------------------------------------------------
@@ -209,8 +213,6 @@ function buildForm() {
       const h = document.createElement("h2");
       h.textContent = group;
       form.appendChild(h);
-      if (group.startsWith("Chamfer")) hint("Connector holes are cut on every edge.");
-      if (group.startsWith("Screw")) hint("Click a circle on the model to add or remove a screw hole.");
       if (group.startsWith("Board")) hint("Drag the blue arrows on the model to change the board size.");
     }
     const field = document.createElement("div");

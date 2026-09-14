@@ -270,9 +270,10 @@ export function createViewer(container) {
   const partsGroup = new THREE.Group();
   scene.add(partsGroup);
   const PART_COLOR = 0xde8f05; // colorblind-palette orange (board is its blue, #0173b2)
-  const partMaterial = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6 });
-  const partSelected = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.25 });
-  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xb87404, roughness: 0.7 }); // darker orange
+  // Parts are 70% opaque so the board stays visible beneath them
+  const partMaterial = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6, transparent: true, opacity: 0.7 });
+  const partSelected = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.25, transparent: true, opacity: 0.7 });
+  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xb87404, roughness: 0.7, transparent: true, opacity: 0.7 }); // darker orange
   let partMeshes = [];
   const listeners = {};
   const on = (name, fn) => { listeners[name] = fn; };
