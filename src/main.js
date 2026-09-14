@@ -198,9 +198,15 @@ function createField(p, vals, onChange) {
     sel.onchange = () => set(typeof p.value === "number" ? Number(sel.value) : sel.value);
     field.appendChild(sel);
     setter = (v) => { sel.value = String(v); vals[p.name] = v; };
-  } else if (p.type === "range") {
-    const num = Object.assign(document.createElement("input"), { type: "number", min: p.min, max: p.max, step: p.step, value: vals[p.name] });
-    const range = Object.assign(document.createElement("input"), { type: "range", min: p.min, max: p.max, step: p.step, value: vals[p.name] });
+  } else if (p.type === "range" || p.type === "number") {
+    // Plain numbers get a slider too: 0 .. 3x the default (at least 10), step by the default's precision
+    const v0 = Number(p.value) || 0;
+    const isInt = Number.isInteger(v0);
+    const min = p.type === "range" ? p.min : 0;
+    const max = p.type === "range" ? p.max : Math.max(10, Math.ceil(v0 * 3));
+    const step = p.type === "range" ? p.step : isInt ? 1 : 0.1;
+    const num = Object.assign(document.createElement("input"), { type: "number", min, max, step, value: vals[p.name] });
+    const range = Object.assign(document.createElement("input"), { type: "range", min, max, step, value: vals[p.name] });
     num.onchange = () => { range.value = num.value; set(Number(num.value)); };
     range.oninput = () => { num.value = range.value; };
     range.onchange = () => set(Number(range.value));
