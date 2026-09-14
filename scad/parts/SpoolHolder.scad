@@ -2,7 +2,7 @@
 Multiconnect Spool Holder for openGrid
 A horizontal peg that a filament spool (e.g. Bambu Lab 1 kg, 55 mm hub) slides onto, with an end
 lip so it cannot roll off and a gusset under the peg for strength. Mounts on two Multiconnect
-snaps. Back plate and slot code derived from BlackjackDuck's MulticonnectHook.scad (QuackWorks).
+snaps. Print it with the back plate on the bed (peg pointing up): no supports needed. Back plate and slot code derived from BlackjackDuck's MulticonnectHook.scad (QuackWorks).
 
 Licensed Creative Commons 4.0 Attribution Non-Commercial Share-Alike (CC-BY-NC-SA)
 Credit to @David D on Printables and Jonathan at Keep Making for Multiconnect and Multiboard,
@@ -97,11 +97,14 @@ union(){
     translate([0, 0, pegCentreZ])
         rotate([-90, 0, 0])
             cyl(d = Peg_Diameter, h = Peg_Length, rounding2 = Rounding, anchor = BOTTOM, $fn = 96);
-    //lip at the end of the peg
+    //lip at the end of the peg: a 45° cone up to the lip so it prints peg-up with no supports
     if (Lip_Height > 0)
-        translate([0, Peg_Length - Lip_Thickness, pegCentreZ])
-            rotate([-90, 0, 0])
-                cyl(d = Peg_Diameter + 2 * Lip_Height, h = Lip_Thickness, rounding = min(Rounding, Lip_Thickness / 2 - 0.01), anchor = BOTTOM, $fn = 96);
+        translate([0, Peg_Length - Lip_Thickness - Lip_Height, pegCentreZ])
+            rotate([-90, 0, 0]) {
+                cyl(d1 = Peg_Diameter, d2 = Peg_Diameter + 2 * Lip_Height, h = Lip_Height, anchor = BOTTOM, $fn = 96);
+                translate([0, 0, Lip_Height])
+                    cyl(d = Peg_Diameter + 2 * Lip_Height, h = Lip_Thickness, rounding2 = min(Rounding, Lip_Thickness / 2 - 0.01), anchor = BOTTOM, $fn = 96);
+            }
     //gusset under the peg
     if (Gusset)
         translate([0, 0, 0])

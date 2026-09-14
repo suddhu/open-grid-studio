@@ -24,7 +24,8 @@ export const PART_TYPES = {
   // Round Hook predates the openGrid option; its slot spacing is a plain variable we override to 28.
   // Its default edge rounding (r = 2.3) uses minkowski() and crashes CGAL in wasm; r = 1 renders fine.
   roundHook:   { name: "Round Hook",   source: roundHookSrc, forced: { distanceBetweenSlots: 28 }, defaults: { r: 1 } },
-  spool:       { name: "Spool Holder", source: spoolSrc }, // ours: peg for filament spools (see the file header)
+  // ours: peg for filament spools (see the file header). Prints back-plate-down so the peg stands up.
+  spool:       { name: "Spool Holder", source: spoolSrc, printRotation: new THREE.Matrix4().makeRotationX(Math.PI / 2) },
 };
 // Customizer groups the panel hides for parts (mounting is forced to openGrid; slot tuning is fine detail)
 export const PART_HIDDEN_GROUPS = new Set(["Mounting Parameters", "Mounting Surface", "Slot Types", "Slot Customization",
@@ -71,6 +72,19 @@ export function placePart(box, c, r, W, H, top) {
 export function cellAt(x, y, W, H) {
   const c = Math.floor((x + W * PITCH / 2) / PITCH), r = Math.floor((H * PITCH / 2 - y) / PITCH);
   return [c, r];
+}
+
+// Copy of a triangle soup with a matrix applied, plus its bounding box (for per-part print orientation).
+export function transformed(pos, matrix) {
+  const out = new Float32Array(pos.length);
+  const v = new THREE.Vector3();
+  const box = new THREE.Box3();
+  for (let i = 0; i < pos.length; i += 3) {
+    v.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(matrix);
+    out[i] = v.x; out[i + 1] = v.y; out[i + 2] = v.z;
+    box.expandByPoint(v);
+  }
+  return { pos: out, box };
 }
 
 // Pack print items onto plates. items: [{ pos, box }] in their own print frame (z up).

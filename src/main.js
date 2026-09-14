@@ -4,7 +4,7 @@ import { createViewer } from "./viewer.js";
 import { PRINTERS } from "./printers.js";
 import source from "../scad/openGrid.scad?raw";
 import connectorSource from "../scad/connector.scad?raw";
-import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PITCH, placePart, slotCount, cellAt, cellCenter, packPlates } from "./parts.js";
+import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PITCH, placePart, slotCount, cellAt, cellCenter, packPlates, transformed } from "./parts.js";
 import { writeStl, toArrayBuffer } from "./stl.js";
 import snapUrl from "../parts/snaps/mc_snap.stl?url";
 
@@ -577,7 +577,11 @@ $("printParts").onclick = async () => {
   setStatus("Preparing parts plate…");
   try {
     const geos = await Promise.all(placed.map((p) => ensurePartGeo(p.type, p.params)));
-    const items = geos.map((g) => ({ pos: g.pos, box: g.box }));
+    // Parts print in their modelled orientation unless the catalogue gives a print rotation
+    const items = geos.map((g, i) => {
+      const rot = partDefs[placed[i].type].printRotation;
+      return rot ? transformed(g.pos, rot) : { pos: g.pos, box: g.box };
+    });
     const snaps = geos.reduce((n, g) => n + slotCount(g.box), 0);
     for (let i = 0; i < snaps; i++) items.push({ pos: snapGeo.pos, box: snapGeo.box });
     const plates = packPlates(items, printer.bed);
