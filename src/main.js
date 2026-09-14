@@ -11,10 +11,10 @@ import snapUrl from "../parts/snaps/mc_snap.stl?url";
 // Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
 const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space", "Adhesive Base Options"]);
 // Full boards only (Lite/Heavy are hidden; Adhesive Base is a Lite-only option)
-const FORCED = { Full_or_Lite: "Full" };
+const FORCED = { Full_or_Lite: "Full", Connector_Holes: true }; // connector holes always on; per-edge toggles live on the model
 // Individual fine-tuning variables hidden from the panel (defaults suit M4 / #8 screws).
 const HIDDEN_PARAMS = new Set([
-  "Full_or_Lite",
+  "Full_or_Lite", "Connector_Holes",
   "Board_Width", "Board_Height", "Screw_Mounting", // edited on the model (drag arrows / click rings)
   "Screw_Every_X_Rows", "Screw_Every_X_Columns", "Screw_Diameter", "Screw_Head_Diameter",
   "Screw_Head_Inset", "Screw_Head_Is_CounterSunk", "Screw_Head_CounterSunk_Degree",
@@ -216,7 +216,7 @@ function buildForm() {
       const h = document.createElement("h2");
       h.textContent = group;
       form.appendChild(h);
-      if (group.startsWith("Chamfer")) hint("Click a corner or edge outline on the model to toggle its chamfer or connector holes.");
+      if (group.startsWith("Chamfer")) hint("Click a corner outline on the model to toggle its chamfer, or an edge outline to toggle that edge's connector holes.");
       if (group.startsWith("Screw")) hint("Click a circle on the model to add or remove a screw hole.");
       if (group.startsWith("Board")) hint("Drag the blue arrows on the model to change the board size.");
     }
