@@ -6,13 +6,15 @@ import source from "../scad/openGrid.scad?raw";
 import connectorSource from "../scad/connector.scad?raw";
 import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PITCH, placePart, cellAt, cellCenter, packPlates } from "./parts.js";
 import { parseStl, bboxOf, writeStl, toArrayBuffer } from "./stl.js";
-import snapFullUrl from "../parts/snaps/mc_snap.stl?url";
-import snapLiteUrl from "../parts/snaps/mc_snap_lite.stl?url";
+import snapUrl from "../parts/snaps/mc_snap.stl?url";
 
 // Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
-const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space"]);
+const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space", "Adhesive Base Options"]);
+// Full boards only (Lite/Heavy are hidden; Adhesive Base is a Lite-only option)
+const FORCED = { Full_or_Lite: "Full" };
 // Individual fine-tuning variables hidden from the panel (defaults suit M4 / #8 screws).
 const HIDDEN_PARAMS = new Set([
+  "Full_or_Lite",
   "Board_Width", "Board_Height", "Screw_Mounting", // edited on the model (drag arrows / click rings)
   "Screw_Every_X_Rows", "Screw_Every_X_Columns", "Screw_Diameter", "Screw_Head_Diameter",
   "Screw_Head_Inset", "Screw_Head_Is_CounterSunk", "Screw_Head_CounterSunk_Degree",
@@ -24,7 +26,7 @@ const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "modu
 
 const allParams = parseCustomizer(source).filter((p) => !HIDDEN_GROUPS.has(p.group));
 const params = allParams.filter((p) => !HIDDEN_PARAMS.has(p.name)); // shown in the form
-const values = Object.fromEntries(allParams.map((p) => [p.name, p.value])); // includes on-model ones
+const values = Object.assign(Object.fromEntries(allParams.map((p) => [p.name, p.value])), FORCED); // includes on-model ones
 window.__values = values; // debugging aid: inspect current parameters from the console
 const setters = {}; // param name -> fn(value) that updates its form control
 let latestStl = null;
@@ -384,6 +386,18 @@ function setStatus(text, error = false) {
 // ---- export to Bambu Studio -------------------------------------------------
 $("topview").onclick = () => viewer.viewTop();
 
+// ---- measure tool -----------------------------------------------------------
+let measuring = false;
+function setMeasuring(v) {
+  measuring = v;
+  $("measure").classList.toggle("active", v);
+  $("measureUnit").hidden = !v;
+  viewer.setMeasuring(v, $("measureUnit").value);
+  if (v) { startPlacing(null); setStatus("Measure: click two points (snaps to edges/corners). Esc clears."); }
+}
+$("measure").onclick = () => setMeasuring(!measuring);
+$("measureUnit").onchange = () => viewer.setMeasuring(measuring, $("measureUnit").value);
+
 // ---- connectors ------------------------------------------------------------
 // Connector holes on the current board: the generator cuts (W-1) per horizontal edge and (H-1)
 // per vertical edge, on the edges that are enabled.
@@ -467,7 +481,7 @@ let placingType = null;   // part type being placed, or null
 let nextPartId = 1;
 const partGeo = new Map(); // key -> { pos, box, geometry } (rendered part, in its own frame)
 const partPending = new Map();
-let snapGeo = { Full: null, Lite: null }; // { pos, box, geometry }
+let snapGeo = null; // { pos, box, geometry } — official Multiconnect snap for Full tiles
 
 try {
   const saved = JSON.parse(localStorage.getItem(PARTS_KEY) || "[]");
@@ -495,13 +509,10 @@ function ensurePartGeo(type, params) {
   return pr;
 }
 async function loadSnaps() {
-  for (const [kind, url] of [["Full", snapFullUrl], ["Lite", snapLiteUrl]]) {
-    const buf = await fetch(url).then((r) => r.arrayBuffer());
-    const pos = parseStl(buf);
-    snapGeo[kind] = { pos, box: bboxOf(pos), geometry: viewer.geometryFromStl(buf) };
-  }
+  const buf = await fetch(snapUrl).then((r) => r.arrayBuffer());
+  const pos = parseStl(buf);
+  snapGeo = { pos, box: bboxOf(pos), geometry: viewer.geometryFromStl(buf) };
 }
-const snapKind = () => (values.Full_or_Lite === "Lite" ? "Lite" : "Full");
 const boardTop = () => (latestBox ? latestBox.max.z : 0);
 const boardWH = () => [values.Board_Width | 0, values.Board_Height | 0];
 
@@ -509,7 +520,7 @@ const boardWH = () => [values.Board_Width | 0, values.Board_Height | 0];
 function snapMatrix(c, r) {
   const [W, H] = boardWH();
   const [x, y] = cellCenter(c, r, W, H);
-  const sg = snapGeo[snapKind()];
+  const sg = snapGeo;
   if (!sg) return null;
   const size = sg.box.getSize(new THREE.Vector3());
   return new THREE.Matrix4().makeTranslation(x - size.x / 2, y - size.y / 2, boardTop() - size.z);
@@ -543,7 +554,7 @@ async function refreshParts() {
     let g;
     try { g = await ensurePartGeo(p.type, p.params); } catch (err) { setStatus(`${partDefs[p.type].name} failed: ${err.message}`, true); continue; }
     const pl = placePart(g.box, p.cell[0], p.cell[1], W, H, boardTop());
-    const sg = snapGeo[snapKind()];
+    const sg = snapGeo;
     list.push({ id: p.id, geometry: g.geometry, matrix: pl.matrix, selected: p.id === selectedId,
       snaps: sg ? pl.snapCells.map(([c, r]) => snapMatrix(c, r)).filter(Boolean) : [], snapGeometry: sg?.geometry });
   }
@@ -606,7 +617,7 @@ $("deletePart").onclick = () => {
 };
 document.addEventListener("keydown", (ev) => {
   if (ev.target.matches("input, select, textarea")) return;
-  if (ev.key === "Escape") startPlacing(null);
+  if (ev.key === "Escape") { if (measuring) viewer.clearMeasure(); startPlacing(null); }
   if ((ev.key === "Delete" || ev.key === "Backspace") && selectedId != null) $("deletePart").onclick();
 });
 
@@ -683,7 +694,7 @@ $("printParts").onclick = async () => {
       items.push({ pos: g.pos, box: g.box });
       snaps += placePart(g.box, 0, 0, 99, 99, 0).n;
     }
-    const sg = snapGeo[snapKind()];
+    const sg = snapGeo;
     for (let i = 0; i < snaps; i++) items.push({ pos: sg.pos, box: sg.box });
     const plates = packPlates(items, printer.bed);
     for (let i = 0; i < plates.length; i++) {

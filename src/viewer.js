@@ -122,6 +122,7 @@ export function createViewer(container) {
   let handles = [];        // { hit: Mesh (pickable), vis: Mesh (coloured), item }
   let placing = false;     // part placement mode (see parts layer below)
   let partDrag = null;
+  let measuring = false;   // measure tool (see below)
   let onHandleClick = () => {};
   let hovered = null;
 
@@ -216,7 +217,7 @@ export function createViewer(container) {
   let downAt = null;
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     downAt = [ev.clientX, ev.clientY];
-    if (placing) return;
+    if (placing || measuring) return;
     const p = pick(ev);
     if (p?.axis && resizeCfg) {
       // Start a resize drag on the plane of the board's top face
@@ -246,7 +247,7 @@ export function createViewer(container) {
       if (hovered?.line) hovered.line.material.color.copy(hovered.item.on ? HANDLE_ON : HANDLE_OFF);
       hovered = h;
       if (h?.line) h.line.material.color.copy(HANDLE_HOVER);
-      renderer.domElement.style.cursor = h ? (h.axis ? (h.axis === "x" ? "ew-resize" : "ns-resize") : "pointer") : "";
+      if (!measuring) renderer.domElement.style.cursor = h ? (h.axis ? (h.axis === "x" ? "ew-resize" : "ns-resize") : "pointer") : "";
       renderer.domElement.title = h ? (h.item?.label ?? h.label ?? "") : "";
     }
   });
@@ -260,7 +261,7 @@ export function createViewer(container) {
       return;
     }
     // A click, not an orbit drag: pointer moved less than a few pixels
-    if (placing || partDrag || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
+    if (placing || measuring || partDrag || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
     const h = pick(ev);
     if (h?.item) onHandleClick(h.item.id);
   });
@@ -330,7 +331,7 @@ export function createViewer(container) {
     return raycaster.intersectObjects(partMeshes, false)[0]?.object.userData.partId ?? null;
   }
   renderer.domElement.addEventListener("pointerdown", (ev) => {
-    if (drag || placing) return;
+    if (drag || placing || measuring) return;
     const id = pickPart(ev);
     if (id != null) { partDrag = { id, moved: false }; controls.enabled = false; renderer.domElement.setPointerCapture(ev.pointerId); }
   });
@@ -352,9 +353,74 @@ export function createViewer(container) {
       return;
     }
     if (placing && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4) { emit("placeclick", ev); return; }
-    if (!drag && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4 && !pick(ev)) emit("emptyclick");
+    if (!drag && !measuring && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4 && !pick(ev)) emit("emptyclick");
   });
   const geometryFromStl = (buffer) => { const g = new STLLoader().parse(buffer); g.computeVertexNormals(); return g; };
+
+  // ---- measure tool --------------------------------------------------------------------
+  // Click two points on any surface; snaps to the nearest mesh vertex within 1.5 mm so edges and
+  // corners measure exactly. Shows the straight-line distance plus the X/Y/Z deltas.
+  const measureGroup = new THREE.Group();
+  scene.add(measureGroup);
+  let measureUnit = "mm";
+  let measureA = null, measureB = null; // Vector3 or null
+  const mkMarker = (p) => { const m = new THREE.Mesh(new THREE.SphereGeometry(1.2, 12, 8), new THREE.MeshBasicMaterial({ color: 0x69b1ff, depthTest: false })); m.position.copy(p); m.renderOrder = 1002; return m; };
+  const fmt = (mm) => measureUnit === "in" ? `${(mm / 25.4).toFixed(3)} in` : `${mm.toFixed(1)} mm`;
+  function measurePick(ev) {
+    raycaster.setFromCamera(pointerNDC(ev), camera);
+    const targets = [mesh, ...partMeshes, ...partsGroup.children].filter(Boolean);
+    const hit = raycaster.intersectObjects(targets, false)[0];
+    if (!hit) return null;
+    // Snap to the nearest vertex of the hit face if it is close
+    const g = hit.object.geometry, pos = g.attributes.position, idx = g.index;
+    const f = hit.face;
+    let best = hit.point.clone(), bestD = 1.5;
+    for (const vi of [f.a, f.b, f.c]) {
+      const v = new THREE.Vector3().fromBufferAttribute(pos, idx ? idx.getX(vi) : vi).applyMatrix4(hit.object.matrixWorld);
+      const d = v.distanceTo(hit.point);
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return best;
+  }
+  function drawMeasure(a, b) {
+    measureGroup.clear();
+    if (a) measureGroup.add(mkMarker(a));
+    if (a && b) {
+      measureGroup.add(mkMarker(b));
+      const geom = new LineGeometry().setPositions([a.x, a.y, a.z, b.x, b.y, b.z]);
+      const line = new Line2(geom, new LineMaterial({ color: 0x69b1ff, linewidth: 0.6, worldUnits: true, depthTest: false }));
+      line.renderOrder = 1001;
+      measureGroup.add(line);
+      const d = a.distanceTo(b);
+      const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y), dz = Math.abs(b.z - a.z);
+      renderer.domElement.dataset.measure = fmt(d); // readable by tests / the status line
+      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture2(fmt(d), `Δ ${fmt(dx)} · ${fmt(dy)} · ${fmt(dz)}`), depthTest: false, transparent: true }));
+      label.scale.set(56, 22, 1);
+      label.position.copy(a).add(b).multiplyScalar(0.5).add(new THREE.Vector3(0, 0, 8));
+      label.renderOrder = 1003;
+      measureGroup.add(label);
+    }
+  }
+  function setMeasuring(v, unit) {
+    measuring = v;
+    if (unit) measureUnit = unit;
+    if (!v) { measureA = measureB = null; measureGroup.clear(); renderer.domElement.style.cursor = ""; }
+    else drawMeasure(measureA, measureB);
+  }
+  const clearMeasure = () => { measureA = measureB = null; measureGroup.clear(); };
+  renderer.domElement.addEventListener("pointermove", (ev) => {
+    if (!measuring) return;
+    renderer.domElement.style.cursor = "crosshair";
+    if (measureA && !measureB) { const p = measurePick(ev); if (p) drawMeasure(measureA, p); }
+  });
+  renderer.domElement.addEventListener("pointerup", (ev) => {
+    if (!measuring || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
+    const p = measurePick(ev);
+    if (!p) return;
+    if (!measureA || measureB) { measureA = p; measureB = null; }
+    else measureB = p;
+    drawMeasure(measureA, measureB);
+  });
 
   function viewTop() {
     const box = mesh ? mesh.geometry.boundingBox : new THREE.Box3(new THREE.Vector3(-90, -90, 0), new THREE.Vector3(90, 90, 0));
@@ -373,7 +439,7 @@ export function createViewer(container) {
   }
 
   return { setStl, setBed, setColor, setHandles, syncHandles, setResizeHandles, viewTop,
-    setParts, setGhost, clearGhost, setPlacing, boardPoint, geometryFromStl, on,
+    setParts, setGhost, clearGhost, setPlacing, boardPoint, geometryFromStl, on, setMeasuring, clearMeasure,
     refit: () => mesh && frame(mesh.geometry.boundingBox) };
 }
 
@@ -409,6 +475,20 @@ function textTexture(text, color) {
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillStyle = "#" + color.toString(16).padStart(6, "0");
   ctx.fillText(text, 128, 66);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function textTexture2(line1, line2) {
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 200;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "rgba(20,21,24,0.88)";
+  ctx.beginPath(); ctx.roundRect(16, 16, 480, 168, 24); ctx.fill();
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#69b1ff"; ctx.font = "bold 72px system-ui, sans-serif"; ctx.fillText(line1, 256, 76);
+  ctx.fillStyle = "#c9cbd3"; ctx.font = "34px system-ui, sans-serif"; ctx.fillText(line2, 256, 146);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
