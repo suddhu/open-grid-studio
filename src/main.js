@@ -3,6 +3,7 @@ import { createViewer } from "./viewer.js";
 import { PRINTERS } from "./printers.js";
 import { FILAMENT_COLORS } from "./colors.js";
 import source from "../scad/openGrid.scad?raw";
+import connectorSource from "../scad/connector.scad?raw";
 
 // Customizer groups hidden from the panel (fine-tuning details, not board topology/size).
 const HIDDEN_GROUPS = new Set(["Advanced - Tile Parameters", "Tile Stacking", "Beta - Fill Space"]);
@@ -287,9 +288,20 @@ function render() {
   worker.postMessage({ id, source, defineArgs: toDefineArgs(values), key });
 }
 
+const auxCallbacks = new Map(); // id -> resolve, for non-board renders
+let auxId = 0;
+function renderAux(src, defineArgs) {
+  return new Promise((resolve) => {
+    const id = -(++auxId); // negative ids: never collide with board render ids
+    auxCallbacks.set(id, resolve);
+    worker.postMessage({ id, source: src, defineArgs, key: null });
+  });
+}
+
 worker.onmessage = ({ data }) => {
+  if (auxCallbacks.has(data.id)) { auxCallbacks.get(data.id)(data); auxCallbacks.delete(data.id); return; }
   inFlight = false;
-  if (!data.error) cachePut(data.key, data.stl); // cache even stale results: the user may come back
+  if (!data.error && data.key) cachePut(data.key, data.stl); // cache even stale results: the user may come back
   if (pending) { pending = false; render(); return; }
   $("spinner").hidden = true;
   if (data.id !== renderId) return; // stale result
@@ -318,6 +330,7 @@ function showResult(data) {
   });
   updateStatus(data.ms ? `Rendered in ${(data.ms / 1000).toFixed(1)} s` : "Cached");
   $("export").disabled = false;
+  syncConnectorCount();
 }
 
 let lastRenderNote = "";
@@ -338,6 +351,50 @@ function setStatus(text, error = false) {
 
 // ---- export to Bambu Studio -------------------------------------------------
 $("topview").onclick = () => viewer.viewTop();
+
+// ---- connectors ------------------------------------------------------------
+// Connector holes on the current board: the generator cuts (W-1) per horizontal edge and (H-1)
+// per vertical edge, on the edges that are enabled.
+function connectorHoleCount() {
+  if (values.Connector_Holes === false) return 0;
+  const W = values.Board_Width | 0, H = values.Board_Height | 0;
+  let n = 0;
+  if (W > 1) n += (values.Connector_Holes_Top ? W - 1 : 0) + (values.Connector_Holes_Bottom ? W - 1 : 0);
+  if (H > 1) n += (values.Connector_Holes_Left ? H - 1 : 0) + (values.Connector_Holes_Right ? H - 1 : 0);
+  return n;
+}
+const countSel = $("connectorCount");
+for (let n = 1; n <= 80; n++) countSel.appendChild(new Option(String(n), String(n)));
+let countTouched = false;
+countSel.onchange = () => { countTouched = true; };
+function syncConnectorCount() {
+  if (countTouched) return;
+  countSel.value = String(Math.min(80, Math.max(1, connectorHoleCount())));
+}
+syncConnectorCount();
+
+$("printConnectors").onclick = async () => {
+  const n = Number(countSel.value);
+  const btn = $("printConnectors");
+  btn.disabled = true;
+  setStatus(`Rendering ${n} connectors…`);
+  $("spinner").hidden = false;
+  try {
+    const data = await renderAux(connectorSource, ["-D", `Count=${n}`]);
+    if (data.error) throw new Error(data.error);
+    const res = await fetch(`/api/export?name=${encodeURIComponent(`opengrid_connectors_x${n}`)}`, {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: data.stl,
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || res.statusText);
+    setStatus(`Opened ${n} connectors in Bambu Studio`);
+  } catch (err) {
+    setStatus(`Connector export failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    if (!inFlight) $("spinner").hidden = true;
+  }
+};
 
 $("export").onclick = async () => {
   if (!latestStl) return;

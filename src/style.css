@@ -6,6 +6,9 @@ body { display:grid; grid-template-columns: 340px 1fr; height:100vh; }
 #panel header { padding:14px 16px 10px; border-bottom:1px solid var(--line); }
 h1 { font-size:16px; margin:0 0 10px; }
 .actions { display:flex; gap:8px; }
+.connectors { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:13px; }
+.connectors button { flex:none; padding:6px 12px; }
+.connectors select { padding:5px 6px; border-radius:6px; border:1px solid var(--line); background:#111216; color:var(--fg); font:inherit; }
 button { flex:1; padding:8px 10px; border-radius:6px; border:1px solid var(--line); background:#26282f; color:var(--fg); cursor:pointer; font:inherit; }
 button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
 button:disabled { opacity:.45; cursor:default; }
