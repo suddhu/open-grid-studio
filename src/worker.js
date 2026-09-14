@@ -39,7 +39,7 @@ function runOnce(inst, source, defineArgs) {
 }
 
 self.onmessage = async ({ data }) => {
-  const { id, source, defineArgs } = data;
+  const { id, source, defineArgs, key } = data;
   const log = (instanceLog = []);
   const t0 = performance.now();
   try {
@@ -52,10 +52,10 @@ self.onmessage = async ({ data }) => {
       instance = null;
       stl = runOnce(await getInstance(), source, defineArgs);
     }
-    self.postMessage({ id, stl, log, ms: performance.now() - t0 }, [stl.buffer]);
+    self.postMessage({ id, key, stl, log, ms: performance.now() - t0 }, [stl.buffer]);
   } catch (err) {
     instance = null;
-    self.postMessage({ id, error: String(err?.message ?? err), log, ms: performance.now() - t0 });
+    self.postMessage({ id, key, error: String(err?.message ?? err), log, ms: performance.now() - t0 });
   } finally {
     instanceLog = null;
   }

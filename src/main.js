@@ -240,24 +240,60 @@ function scheduleRender() {
   debounce = setTimeout(render, 250);
 }
 
+// Rendered STLs keyed by the full parameter set, so revisiting a state (toggling something back,
+// undoing a resize) is instant instead of another multi-second render.
+const stlCache = new Map();
+const CACHE_LIMIT = 40; // ~40 boards × a few hundred KB
+// Key on what the geometry depends on, not the raw parameters: screw mode + custom string collapse
+// to the effective hole set, and per-corner/edge flags are ignored when their master switch is off.
+function cacheKey() {
+  const v = { ...values };
+  delete v.Screw_Mounting; delete v.Screw_Custom_Positions;
+  v.__screws = [...screwPattern()].sort((a, b) => a - b).join(",");
+  if (v.Chamfers === "None") for (const n of Object.values(SPATIAL.corners)) delete v[n];
+  if (v.Connector_Holes === false) for (const n of Object.values(SPATIAL.edges)) delete v[n];
+  if (v.Screw_Every_X_Rows !== undefined) { delete v.Screw_Every_X_Rows; delete v.Screw_Every_X_Columns; }
+  return JSON.stringify(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+function cachePut(key, stl) {
+  if (stlCache.has(key)) stlCache.delete(key);
+  stlCache.set(key, stl);
+  if (stlCache.size > CACHE_LIMIT) stlCache.delete(stlCache.keys().next().value); // evict oldest
+}
+
 // One render in flight at a time; edits made meanwhile collapse into a single follow-up render.
 let inFlight = false;
 let pending = false;
 function render() {
+  const key = cacheKey();
+  const cached = stlCache.get(key);
+  if (cached) {
+    cachePut(key, cached); // refresh recency
+    pending = false;
+    renderId++;
+    showResult({ stl: cached, log: ["(from cache)"], ms: 0 });
+    return;
+  }
   if (inFlight) { pending = true; return; }
   inFlight = true;
   const id = ++renderId;
   setStatus("Rendering…");
   $("spinner").hidden = false;
   $("export").disabled = true;
-  worker.postMessage({ id, source, defineArgs: toDefineArgs(values) });
+  worker.postMessage({ id, source, defineArgs: toDefineArgs(values), key });
 }
 
 worker.onmessage = ({ data }) => {
   inFlight = false;
+  if (!data.error) cachePut(data.key, data.stl); // cache even stale results: the user may come back
   if (pending) { pending = false; render(); return; }
   $("spinner").hidden = true;
   if (data.id !== renderId) return; // stale result
+  showResult(data);
+};
+
+function showResult(data) {
+  $("spinner").hidden = true;
   $("log").textContent = data.log.join("\n");
   if (data.error) {
     setStatus(`Render failed: ${data.error}`, true);
@@ -276,9 +312,9 @@ worker.onmessage = ({ data }) => {
     syncHandles();
     scheduleRender();
   });
-  updateStatus(`Rendered in ${(data.ms / 1000).toFixed(1)} s`);
+  updateStatus(data.ms ? `Rendered in ${(data.ms / 1000).toFixed(1)} s` : "Cached");
   $("export").disabled = false;
-};
+}
 
 let lastRenderNote = "";
 function updateStatus(note) {
