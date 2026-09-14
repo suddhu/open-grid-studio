@@ -395,8 +395,10 @@ export function createViewer(container) {
       const d = a.distanceTo(b);
       const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y), dz = Math.abs(b.z - a.z);
       renderer.domElement.dataset.measure = fmt(d); // readable by tests / the status line
-      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture2(fmt(d), `Δ ${fmt(dx)} · ${fmt(dy)} · ${fmt(dz)}`), depthTest: false, transparent: true }));
-      label.scale.set(56, 22, 1);
+      // Sub-line: per-axis deltas in the axis colours (X red, Y green, Z blue), like the gizmo
+      const sub = [["X " + fmt(dx), "#ff4d4d"], ["Y " + fmt(dy), "#4dff4d"], ["Z " + fmt(dz), "#69b1ff"]];
+      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture2(fmt(d), sub), depthTest: false, transparent: true }));
+      label.scale.set(70, 22, 1);
       label.position.copy(a).add(b).multiplyScalar(0.5).add(new THREE.Vector3(0, 0, 8));
       label.renderOrder = 1003;
       measureGroup.add(label);
@@ -513,15 +515,21 @@ function textTexture(text, color) {
   return tex;
 }
 
-function textTexture2(line1, line2) {
+// line1: big heading; segments: [[text, color], ...] laid out on one line with gaps
+function textTexture2(line1, segments) {
   const c = document.createElement("canvas");
-  c.width = 512; c.height = 200;
+  c.width = 640; c.height = 200;
   const ctx = c.getContext("2d");
   ctx.fillStyle = "rgba(20,21,24,0.88)";
-  ctx.beginPath(); ctx.roundRect(16, 16, 480, 168, 24); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(16, 16, 608, 168, 24); ctx.fill();
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "#69b1ff"; ctx.font = "bold 72px system-ui, sans-serif"; ctx.fillText(line1, 256, 76);
-  ctx.fillStyle = "#c9cbd3"; ctx.font = "34px system-ui, sans-serif"; ctx.fillText(line2, 256, 146);
+  ctx.fillStyle = "#ffffff"; ctx.font = "bold 72px system-ui, sans-serif"; ctx.fillText(line1, 320, 76);
+  ctx.font = "bold 34px system-ui, sans-serif";
+  const gap = 28;
+  const widths = segments.map(([t]) => ctx.measureText(t).width);
+  let x = 320 - (widths.reduce((a, b) => a + b, 0) + gap * (segments.length - 1)) / 2;
+  ctx.textAlign = "left";
+  segments.forEach(([t, color], i) => { ctx.fillStyle = color; ctx.fillText(t, x, 146); x += widths[i] + gap; });
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
