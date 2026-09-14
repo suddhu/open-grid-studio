@@ -5,6 +5,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { PART_ROTATION } from "./parts.js";
 
 export function createViewer(container) {
   const scene = new THREE.Scene();
@@ -114,58 +115,22 @@ export function createViewer(container) {
     renderer.render(gizmoScene, gizmoCamera);
   })();
 
-  // ---- clickable 3D handles (corner chamfers / edge connector holes / screw rings) ----
-  const handleGroup = new THREE.Group();
-  scene.add(handleGroup);
+  // ---- picking helpers -------------------------------------------------------------------
   const raycaster = new THREE.Raycaster();
-  const HANDLE_ON = new THREE.Color(0xf28c28), HANDLE_OFF = new THREE.Color(0x5a5d6a);
-  let handles = [];        // { hit: Mesh (pickable), vis: Mesh (coloured), item }
   let placing = false;     // part placement mode (see parts layer below)
-  let partDrag = null;
+  let partDrag = null;     // { id, moved } while a placed part is being dragged
   let measuring = false;   // measure tool (see below)
-  let onHandleClick = () => {};
-  let hovered = null;
-
-  // items: [{ id, outline: [[x,y],...] (closed loop on the top face), z, on, enabled, label }]
-  // Each handle is a fat outline drawn on the mesh; the filled region inside it is the click target.
-  const HANDLE_HOVER = new THREE.Color(0xffffff);
-  function setHandles(items, onClick) {
-    onHandleClick = onClick;
-    handleGroup.clear();
-    handles = items.map((it) => {
-      const pts = it.outline.flatMap(([x, y]) => [x, y, it.z]);
-      pts.push(it.outline[0][0], it.outline[0][1], it.z); // close the loop
-      const geom = new LineGeometry().setPositions(pts);
-      const mat = new LineMaterial({ color: HANDLE_OFF.getHex(), linewidth: 0.9, worldUnits: true, depthTest: false, transparent: true });
-      const line = new Line2(geom, mat);
-      line.computeLineDistances();
-      line.renderOrder = 997;
-      // Invisible fill for hit-testing
-      const shape = new THREE.Shape(it.outline.map(([x, y]) => new THREE.Vector2(x, y)));
-      const fill = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ visible: false }));
-      fill.position.z = it.z;
-      handleGroup.add(line, fill);
-      const h = { hit: [fill], line, item: it };
-      fill.userData.handle = h;
-      return h;
-    });
-    syncHandles(items);
-  }
-  function syncHandles(items) {
-    for (const h of handles) {
-      h.item = items.find((i) => i.id === h.item.id) ?? h.item;
-      h.line.material.color.copy(h.item.on ? HANDLE_ON : HANDLE_OFF);
-      h.line.material.opacity = h.item.enabled === false ? 0.3 : 1;
-    }
-  }
+  let hovered = null;      // hovered resize arrow, for cursor/tooltip
+  let downAt = null;       // pointer position at pointerdown, for click-vs-drag
+  const wasClick = (ev) => !!downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4;
   function pointerNDC(ev) {
     const r = renderer.domElement.getBoundingClientRect();
     return new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
   }
+  // Resize arrow under the pointer, or null
   function pick(ev) {
     raycaster.setFromCamera(pointerNDC(ev), camera);
-    const hit = raycaster.intersectObjects([...handles.flatMap((h) => h.hit), ...resizeArrows], false)[0]?.object;
-    return hit?.userData.handle ?? hit?.userData.resize ?? null;
+    return raycaster.intersectObjects(resizeArrows, false)[0]?.object.userData.resize ?? null;
   }
 
   // ---- drag-to-resize arrows (board width / height in whole tiles) ---------------------
@@ -214,12 +179,11 @@ export function createViewer(container) {
     preview.add(label);
   }
 
-  let downAt = null;
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     downAt = [ev.clientX, ev.clientY];
     if (placing || measuring) return;
     const p = pick(ev);
-    if (p?.axis && resizeCfg) {
+    if (p && resizeCfg) {
       // Start a resize drag on the plane of the board's top face
       drag = { axis: p.axis, cols: resizeCfg.cols, rows: resizeCfg.rows };
       controls.enabled = false;
@@ -242,28 +206,21 @@ export function createViewer(container) {
       showPreview(drag.cols, drag.rows, box.max.z);
       return;
     }
+    if (placing || measuring || partDrag) return; // other modes own the pointer
     const h = pick(ev);
     if (h !== hovered) {
-      if (hovered?.line) hovered.line.material.color.copy(hovered.item.on ? HANDLE_ON : HANDLE_OFF);
       hovered = h;
-      if (h?.line) h.line.material.color.copy(HANDLE_HOVER);
-      if (!measuring) renderer.domElement.style.cursor = h ? (h.axis ? (h.axis === "x" ? "ew-resize" : "ns-resize") : "pointer") : "";
-      renderer.domElement.title = h ? (h.item?.label ?? h.label ?? "") : "";
+      renderer.domElement.style.cursor = h ? (h.axis === "x" ? "ew-resize" : "ns-resize") : "";
+      renderer.domElement.title = h?.label ?? "";
     }
   });
-  renderer.domElement.addEventListener("pointerup", (ev) => {
-    if (drag) {
-      const { cols, rows } = drag;
-      drag = null;
-      controls.enabled = true;
-      preview.clear();
-      if (cols !== resizeCfg.cols || rows !== resizeCfg.rows) resizeCfg.onResize(cols, rows);
-      return;
-    }
-    // A click, not an orbit drag: pointer moved less than a few pixels
-    if (placing || measuring || partDrag || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
-    const h = pick(ev);
-    if (h?.item) onHandleClick(h.item.id);
+  renderer.domElement.addEventListener("pointerup", () => {
+    if (!drag) return;
+    const { cols, rows } = drag;
+    drag = null;
+    controls.enabled = true;
+    preview.clear();
+    if (cols !== resizeCfg.cols || rows !== resizeCfg.rows) resizeCfg.onResize(cols, rows);
   });
 
   // ---- placed parts, snaps and the placement ghost ------------------------------------
@@ -339,7 +296,7 @@ export function createViewer(container) {
   const setPlacing = (v) => { placing = v; if (!v) clearGhost(); };
   renderer.domElement.addEventListener("pointermove", (ev) => {
     if (partDrag) {
-      if (!partDrag.moved && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) partDrag.moved = true;
+      if (!partDrag.moved && !wasClick(ev)) partDrag.moved = true;
       if (partDrag.moved) emit("partdrag", partDrag.id, ev);
       return;
     }
@@ -353,8 +310,9 @@ export function createViewer(container) {
       emit(moved ? "partdrop" : "partclick", id, ev);
       return;
     }
-    if (placing && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4) { emit("placeclick", ev); return; }
-    if (!drag && !measuring && downAt && Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) <= 4 && !pick(ev)) emit("emptyclick");
+    if (!wasClick(ev) || drag || measuring) return;
+    if (placing) emit("placeclick", ev);
+    else if (!pick(ev)) emit("emptyclick");
   });
   const geometryFromStl = (buffer) => { const g = new STLLoader().parse(buffer); g.computeVertexNormals(); return g; };
 
@@ -369,7 +327,7 @@ export function createViewer(container) {
   const fmt = (mm) => measureUnit === "in" ? `${(mm / 25.4).toFixed(3)} in` : `${mm.toFixed(1)} mm`;
   function measurePick(ev) {
     raycaster.setFromCamera(pointerNDC(ev), camera);
-    const targets = [mesh, ...partMeshes, ...partsGroup.children].filter(Boolean);
+    const targets = [mesh, ...partsGroup.children].filter(Boolean);
     const hit = raycaster.intersectObjects(targets, false)[0];
     if (!hit) return null;
     // Snap to the nearest vertex of the hit face if it is close
@@ -417,7 +375,7 @@ export function createViewer(container) {
     if (measureA && !measureB) { const p = measurePick(ev); if (p) drawMeasure(measureA, p); }
   });
   renderer.domElement.addEventListener("pointerup", (ev) => {
-    if (!measuring || !downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4) return;
+    if (!measuring || !wasClick(ev)) return;
     const p = measurePick(ev);
     if (!p) return;
     if (!measureA || measureB) { measureA = p; measureB = null; }
@@ -438,10 +396,10 @@ export function createViewer(container) {
     const k = new THREE.DirectionalLight(0xffffff, 1.4); k.position.set(1, -1, 2); sc.add(k);
     const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 0.6 }));
     m.matrixAutoUpdate = false;
-    m.matrix.copy(PART_ROTATION_MATRIX); // show the part as it sits on the board
+    m.matrix.copy(PART_ROTATION); // show the part as it sits on the board
     sc.add(m);
     geometry.computeBoundingBox();
-    const box = geometry.boundingBox.clone().applyMatrix4(PART_ROTATION_MATRIX);
+    const box = geometry.boundingBox.clone().applyMatrix4(PART_ROTATION);
     const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
     const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 5000);
     cam.up.set(0, 0, 1);
@@ -450,7 +408,6 @@ export function createViewer(container) {
     thumbRenderer.render(sc, cam);
     return thumbRenderer.domElement.toDataURL("image/png");
   }
-  const PART_ROTATION_MATRIX = new THREE.Matrix4().makeRotationZ(Math.PI).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
 
   // Default 3/4 ("isometric") view of the plate + model
   function viewIso() {
@@ -466,14 +423,9 @@ export function createViewer(container) {
     controls.update();
   }
 
-  function setColor(hex) {
-    material.color.set(hex);
-    // Very dark filaments would render as a silhouette; lift the shaded color slightly.
-    const hsl = {}; material.color.getHSL(hsl);
-    if (hsl.l < 0.08) material.color.setHSL(hsl.h, hsl.s, 0.08);
-  }
+  const setColor = (hex) => material.color.set(hex);
 
-  return { setStl, setBed, setColor, setHandles, syncHandles, setResizeHandles, viewTop,
+  return { setStl, setBed, setColor, setResizeHandles, viewTop,
     setParts, setGhost, clearGhost, setPlacing, boardPoint, geometryFromStl, on, setMeasuring, clearMeasure, renderThumbnail, viewIso,
     refit: () => mesh && frame(mesh.geometry.boundingBox) };
 }
@@ -500,51 +452,49 @@ function makeAxes(length, labelSize) {
   return group;
 }
 
+// Draws with `draw(ctx)` on a w x h canvas and wraps it in an sRGB CanvasTexture.
+function canvasTexture(w, h, draw) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  draw(ctx);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const hex = (color) => "#" + color.toString(16).padStart(6, "0");
+const pill = (ctx, x, y, w, h, r) => { ctx.fillStyle = "rgba(20,21,24,0.88)"; ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); };
+
+// Single-line label on a dark pill (resize preview)
 function textTexture(text, color) {
-  const c = document.createElement("canvas");
-  c.width = 256; c.height = 128;
-  const ctx = c.getContext("2d");
-  ctx.fillStyle = "rgba(20,21,24,0.85)";
-  ctx.beginPath(); ctx.roundRect(28, 24, 200, 80, 16); ctx.fill();
-  ctx.font = "bold 56px system-ui, sans-serif";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "#" + color.toString(16).padStart(6, "0");
-  ctx.fillText(text, 128, 66);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return canvasTexture(256, 128, (ctx) => {
+    pill(ctx, 28, 24, 200, 80, 16);
+    ctx.font = "bold 56px system-ui, sans-serif";
+    ctx.fillStyle = hex(color);
+    ctx.fillText(text, 128, 66);
+  });
 }
 
-// line1: big heading; segments: [[text, color], ...] laid out on one line with gaps
+// Heading plus a row of coloured segments (measure label). segments: [[text, cssColor], ...]
 function textTexture2(line1, segments) {
-  const c = document.createElement("canvas");
-  c.width = 640; c.height = 200;
-  const ctx = c.getContext("2d");
-  ctx.fillStyle = "rgba(20,21,24,0.88)";
-  ctx.beginPath(); ctx.roundRect(16, 16, 608, 168, 24); ctx.fill();
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "#ffffff"; ctx.font = "bold 72px system-ui, sans-serif"; ctx.fillText(line1, 320, 76);
-  ctx.font = "bold 34px system-ui, sans-serif";
-  const gap = 16;
-  const widths = segments.map(([t]) => ctx.measureText(t).width);
-  let x = 320 - (widths.reduce((a, b) => a + b, 0) + gap * (segments.length - 1)) / 2;
-  ctx.textAlign = "left";
-  segments.forEach(([t, color], i) => { ctx.fillStyle = color; ctx.fillText(t, x, 146); x += widths[i] + gap; });
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return canvasTexture(640, 200, (ctx) => {
+    pill(ctx, 16, 16, 608, 168, 24);
+    ctx.fillStyle = "#ffffff"; ctx.font = "bold 72px system-ui, sans-serif"; ctx.fillText(line1, 320, 76);
+    ctx.font = "bold 34px system-ui, sans-serif";
+    const gap = 16;
+    const widths = segments.map(([t]) => ctx.measureText(t).width);
+    let x = 320 - (widths.reduce((a, b) => a + b, 0) + gap * (segments.length - 1)) / 2;
+    ctx.textAlign = "left";
+    segments.forEach(([t, color], i) => { ctx.fillStyle = color; ctx.fillText(t, x, 146); x += widths[i] + gap; });
+  });
 }
 
+// Axis letter for the axes helper
 function labelTexture(text, color) {
-  const c = document.createElement("canvas");
-  c.width = c.height = 64;
-  const ctx = c.getContext("2d");
-  ctx.font = "bold 44px system-ui, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "#" + color.toString(16).padStart(6, "0");
-  ctx.fillText(text, 32, 34);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return canvasTexture(64, 64, (ctx) => {
+    ctx.font = "bold 44px system-ui, sans-serif";
+    ctx.fillStyle = hex(color);
+    ctx.fillText(text, 32, 34);
+  });
 }
