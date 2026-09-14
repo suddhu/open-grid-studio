@@ -269,10 +269,10 @@ export function createViewer(container) {
   // ---- placed parts, snaps and the placement ghost ------------------------------------
   const partsGroup = new THREE.Group();
   scene.add(partsGroup);
-  const PART_COLOR = 0xf2a93b; // amber: complementary to the steel-blue board
+  const PART_COLOR = 0xde8f05; // colorblind-palette orange (board is its blue, #0173b2)
   const partMaterial = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6 });
   const partSelected = new THREE.MeshStandardMaterial({ color: PART_COLOR, roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.25 });
-  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xc9861f, roughness: 0.7 }); // darker amber
+  const snapMaterial = new THREE.MeshStandardMaterial({ color: 0xb87404, roughness: 0.7 }); // darker orange
   let partMeshes = [];
   const listeners = {};
   const on = (name, fn) => { listeners[name] = fn; };
@@ -422,6 +422,38 @@ export function createViewer(container) {
     drawMeasure(measureA, measureB);
   });
 
+  // ---- thumbnails: render a geometry to a small PNG data URL (for the parts palette) --------
+  let thumbRenderer = null;
+  function renderThumbnail(geometry, size = 96, color = PART_COLOR) {
+    if (!thumbRenderer) {
+      thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+      thumbRenderer.setPixelRatio(2);
+      thumbRenderer.setSize(size, size, false);
+    }
+    const sc = new THREE.Scene();
+    sc.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.3));
+    const k = new THREE.DirectionalLight(0xffffff, 1.4); k.position.set(1, -1, 2); sc.add(k);
+    const m = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, roughness: 0.6 }));
+    m.matrixAutoUpdate = false;
+    m.matrix.copy(PART_ROTATION_MATRIX); // show the part as it sits on the board
+    sc.add(m);
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox.clone().applyMatrix4(PART_ROTATION_MATRIX);
+    const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2;
+    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 5000);
+    cam.up.set(0, 0, 1);
+    cam.position.copy(c).add(new THREE.Vector3(1, -1, 1).normalize().multiplyScalar(r / Math.sin(THREE.MathUtils.degToRad(15)) * 1.05));
+    cam.lookAt(c);
+    thumbRenderer.render(sc, cam);
+    return thumbRenderer.domElement.toDataURL("image/png");
+  }
+  const PART_ROTATION_MATRIX = new THREE.Matrix4().makeRotationZ(Math.PI).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+
+  // Default 3/4 ("isometric") view of the plate + model
+  function viewIso() {
+    frame(mesh ? mesh.geometry.boundingBox : new THREE.Box3(new THREE.Vector3(-1, -1, 0), new THREE.Vector3(1, 1, 0)));
+  }
+
   function viewTop() {
     const box = mesh ? mesh.geometry.boundingBox : new THREE.Box3(new THREE.Vector3(-90, -90, 0), new THREE.Vector3(90, 90, 0));
     const center = box.getCenter(new THREE.Vector3());
@@ -439,7 +471,7 @@ export function createViewer(container) {
   }
 
   return { setStl, setBed, setColor, setHandles, syncHandles, setResizeHandles, viewTop,
-    setParts, setGhost, clearGhost, setPlacing, boardPoint, geometryFromStl, on, setMeasuring, clearMeasure,
+    setParts, setGhost, clearGhost, setPlacing, boardPoint, geometryFromStl, on, setMeasuring, clearMeasure, renderThumbnail, viewIso,
     refit: () => mesh && frame(mesh.geometry.boundingBox) };
 }
 

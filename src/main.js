@@ -54,8 +54,9 @@ function fitToPlate() {
 }
 
 // ---- colours ---------------------------------------------------------------
-// Two complementary colours: steel blue for the board, amber for everything that mounts on it.
-const BOARD_COLOR = "#4f6d8f";
+// Two colours from the seaborn "colorblind" palette: blue for the board, orange for everything
+// that mounts on it (parts, snaps, placement ghost — see viewer.js PART_COLOR).
+const BOARD_COLOR = "#0173b2";
 viewer.setColor(BOARD_COLOR);
 
 // ---- on-model handles -------------------------------------------------------
@@ -96,18 +97,10 @@ function handleItems(box) {
     screws.push({ id: `screw:${i}`, z, on: on.has(i), enabled: true, outline: circle(x, y),
       label: `Screw hole (row ${r + 1}, column ${cI + 1})` });
   }
-  const inset = 14; // keep edge strips clear of the corner triangles
-  return [
-    ...screws,
-    tri(SPATIAL.corners.TL, min.x, max.y, -1, 1, "Chamfer: top-left corner"),
-    tri(SPATIAL.corners.TR, max.x, max.y, 1, 1, "Chamfer: top-right corner"),
-    tri(SPATIAL.corners.BL, min.x, min.y, -1, -1, "Chamfer: bottom-left corner"),
-    tri(SPATIAL.corners.BR, max.x, min.y, 1, -1, "Chamfer: bottom-right corner"),
-    strip(SPATIAL.edges.T, min.x + inset, max.y - STRIP, max.x - inset, max.y, "Connector holes: top edge"),
-    strip(SPATIAL.edges.B, min.x + inset, min.y, max.x - inset, min.y + STRIP, "Connector holes: bottom edge"),
-    strip(SPATIAL.edges.L, min.x, min.y + inset, min.x + STRIP, max.y - inset, "Connector holes: left edge"),
-    strip(SPATIAL.edges.R, max.x - STRIP, min.y + inset, max.x, max.y - inset, "Connector holes: right edge"),
-  ];
+  // Corner chamfers and edge connector holes are always on (their outlines were removed);
+  // only screw holes are toggled on the model.
+  void tri; void strip; void edgesOn; void cornersOn;
+  return screws;
 }
 
 // ---- screw holes ------------------------------------------------------------
@@ -216,7 +209,7 @@ function buildForm() {
       const h = document.createElement("h2");
       h.textContent = group;
       form.appendChild(h);
-      if (group.startsWith("Chamfer")) hint("Click a corner outline on the model to toggle its chamfer, or an edge outline to toggle that edge's connector holes.");
+      if (group.startsWith("Chamfer")) hint("Connector holes are cut on every edge.");
       if (group.startsWith("Screw")) hint("Click a circle on the model to add or remove a screw hole.");
       if (group.startsWith("Board")) hint("Drag the blue arrows on the model to change the board size.");
     }
@@ -384,7 +377,12 @@ function setStatus(text, error = false) {
 }
 
 // ---- export to Bambu Studio -------------------------------------------------
-$("topview").onclick = () => viewer.viewTop();
+let topView = false;
+$("topview").onclick = () => {
+  topView = !topView;
+  if (topView) viewer.viewTop(); else viewer.viewIso();
+  $("topview").textContent = topView ? "Iso view" : "Top view";
+};
 
 // ---- measure tool -----------------------------------------------------------
 let measuring = false;
@@ -471,8 +469,11 @@ const PARTS_KEY = "opengrid.parts";
 const partDefs = Object.fromEntries(Object.entries(PART_TYPES).map(([id, t]) => {
   const all = parseCustomizer(t.source);
   const defaults = Object.fromEntries(all.map((p) => [p.name, p.value]));
-  Object.assign(defaults, PART_FORCED);
-  return [id, { ...t, params: all.filter((p) => !PART_HIDDEN_GROUPS.has(p.group) && !(p.name in PART_FORCED)), defaults }];
+  const forced = { ...PART_FORCED, ...(t.forced || {}) };
+  // Only force what the file actually declares (e.g. Round Hook has no Connection_Type)
+  for (const k of Object.keys(forced)) if (k in defaults) defaults[k] = forced[k];
+  Object.assign(defaults, t.defaults || {}); // editable default overrides
+  return [id, { ...t, params: all.filter((p) => !PART_HIDDEN_GROUPS.has(p.group) && !(p.name in forced)), defaults, forced }];
 }));
 
 let placed = [];          // [{ id, type, cell: [c, r], params }]
@@ -485,7 +486,7 @@ let snapGeo = null; // { pos, box, geometry } — official Multiconnect snap for
 
 try {
   const saved = JSON.parse(localStorage.getItem(PARTS_KEY) || "[]");
-  placed = saved.filter((p) => partDefs[p.type]).map((p) => ({ ...p, id: nextPartId++, params: { ...partDefs[p.type].defaults, ...p.params, ...PART_FORCED } }));
+  placed = saved.filter((p) => partDefs[p.type]).map((p) => ({ ...p, id: nextPartId++, params: { ...partDefs[p.type].defaults, ...p.params } }));
 } catch {}
 const savePlaced = () => { try { localStorage.setItem(PARTS_KEY, JSON.stringify(placed.map(({ type, cell, params }) => ({ type, cell, params })))); } catch {} };
 
@@ -564,13 +565,35 @@ async function refreshParts() {
 
 // ---- panel ------------------------------------------------------------------
 const palette = $("partPalette");
+const THUMB_KEY = "opengrid.thumbs";
+let thumbs = {};
+try { thumbs = JSON.parse(localStorage.getItem(THUMB_KEY) || "{}"); } catch {}
 for (const [type, def] of Object.entries(partDefs)) {
   const b = document.createElement("button");
   b.type = "button";
-  b.textContent = `+ ${def.name}`;
+  b.title = def.name;
+  const icon = document.createElement(thumbs[type] ? "img" : "div");
+  if (thumbs[type]) { icon.src = thumbs[type]; icon.alt = ""; } else icon.className = "ph";
+  const label = document.createElement("span");
+  label.textContent = def.name;
+  b.append(icon, label);
   b.onclick = () => startPlacing(placingType === type ? null : type);
   b.dataset.type = type;
   palette.appendChild(b);
+}
+// Render missing thumbnails in the background (one part at a time, after the board is up).
+async function buildThumbnails() {
+  for (const [type, def] of Object.entries(partDefs)) {
+    if (thumbs[type]) continue;
+    try {
+      const g = await ensurePartGeo(type, def.defaults);
+      thumbs[type] = viewer.renderThumbnail(g.geometry);
+      const b = palette.querySelector(`[data-type="${type}"]`);
+      const img = document.createElement("img"); img.src = thumbs[type]; img.alt = "";
+      b.replaceChild(img, b.firstChild);
+      try { localStorage.setItem(THUMB_KEY, JSON.stringify(thumbs)); } catch {}
+    } catch (err) { console.warn("thumbnail failed", type, err); }
+  }
 }
 function startPlacing(type) {
   placingType = type;
@@ -646,7 +669,9 @@ viewer.on("placeclick", async (ev) => {
   if (!pt || !placingType) return;
   const type = placingType;
   const [c, r] = cellAt(pt[0], pt[1], ...boardWH());
-  const g = await ensurePartGeo(type, partDefs[type].defaults);
+  let g;
+  try { g = await ensurePartGeo(type, partDefs[type].defaults); }
+  catch (err) { setStatus(`${partDefs[type].name} failed to render: ${err.message}`, true); return; }
   const pl = placementValid(g.box, c, r, null);
   if (!pl.valid) { setStatus("That spot is off the board or already occupied", true); return; }
   const part = { id: nextPartId++, type, cell: [c, r], params: { ...partDefs[type].defaults } };
@@ -712,4 +737,4 @@ $("printParts").onclick = async () => {
   }
 };
 
-loadSnaps().then(refreshParts);
+loadSnaps().then(refreshParts).then(buildThumbnails);

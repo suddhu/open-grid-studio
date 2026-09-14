@@ -42,7 +42,11 @@ button:disabled { opacity:.45; cursor:default; }
 #partsPanel { padding:10px 16px 12px; border-bottom:1px solid var(--line); }
 #partsPanel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 6px; }
 #partPalette { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
-#partPalette button { flex:none; padding:5px 10px; font-size:12px; }
+#partPalette { display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; }
+#partPalette button { display:flex; flex-direction:column; align-items:center; gap:2px; padding:6px 2px 5px; font-size:10px; line-height:1.1; color:var(--muted); }
+#partPalette button img { width:48px; height:48px; object-fit:contain; }
+#partPalette button .ph { width:48px; height:48px; border-radius:6px; background:#1b1c21; }
+#partPalette button:hover { color:var(--fg); }
 #partPalette button.active { border-color:#69b1ff; color:#69b1ff; }
 #partList { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
 #partList li { display:flex; justify-content:space-between; padding:4px 8px; border-radius:4px; font-size:12px; cursor:pointer; color:var(--muted); }
