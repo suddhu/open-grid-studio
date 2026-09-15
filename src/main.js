@@ -8,6 +8,7 @@ import { PART_TYPES, PART_HIDDEN_GROUPS, PART_FORCED, PRINT_DEFAULTS, PRINT_BOAR
 import { toArrayBuffer } from "./stl.js";
 import { write3mf } from "./threemf.js";
 import snapUrl from "../parts/snaps/mc_snap.stl?url";
+import connectorUrl from "../parts/snaps/mc_connector.stl?url";
 
 // Board options are fixed (Full tile, corner chamfers, connector holes on every edge, 4 corner
 // screw holes); the panel only shows what is left. Everything else keeps the generator's defaults.
@@ -323,7 +324,8 @@ let placingType = null;   // part type being placed, or null
 let nextPartId = 1;
 const partGeo = new Map(); // key -> { pos, box, geometry } (rendered part, in its own frame)
 const partPending = new Map();
-let snapGeo = null; // { pos, box, geometry } — official Multiconnect snap for Full tiles
+let snapGeo = null;      // official Multiconnect snap (threaded socket that clips into a cell)
+let connectorGeo = null; // official Multiconnect connector (threaded stud with the 20 mm head the parts hang on)
 
 try {
   const saved = JSON.parse(localStorage.getItem(PARTS_KEY) || "[]");
@@ -360,14 +362,22 @@ function meshData(buffer) {
   return { pos: geometry.attributes.position.array, box: geometry.boundingBox, geometry };
 }
 async function loadSnaps() {
-  snapGeo = meshData(await fetch(snapUrl).then((r) => r.arrayBuffer()));
+  [snapGeo, connectorGeo] = await Promise.all([snapUrl, connectorUrl].map((u) => fetch(u).then((r) => r.arrayBuffer()).then(meshData)));
 }
 
-// Snap sits inside the cell, flush with the face (Full 6.8 / Lite 3.4 deep)
+// Snap sits inside the cell, flush with the face (6.8 deep). The connector screws into it stem-down;
+// its STL has the head face at z = 0, so flip it and stand the head 3.5 mm (neck + head) above the face.
 function snapMatrix(c, r) {
   const [x, y] = cellCenter(c, r, ...boardWH());
   const size = snapGeo.box.getSize(new THREE.Vector3());
   return new THREE.Matrix4().makeTranslation(x - size.x / 2, y - size.y / 2, boardTop() - size.z);
+}
+function connectorMatrix(c, r) {
+  const [x, y] = cellCenter(c, r, ...boardWH());
+  const size = connectorGeo.box.getSize(new THREE.Vector3());
+  return new THREE.Matrix4().makeTranslation(x, y, boardTop() + 3.5)
+    .multiply(new THREE.Matrix4().makeRotationX(Math.PI))
+    .multiply(new THREE.Matrix4().makeTranslation(-size.x / 2, -size.y / 2, 0));
 }
 
 function occupiedBy(excludeId) {
@@ -409,7 +419,8 @@ async function refreshParts() {
     const pl = placePart(g.box, p.cell[0], p.cell[1], W, H, boardTop());
     if (!pl.inBounds) { dropped.push(p); return; } // board shrank (or stale storage): part no longer fits
     list.push({ id: p.id, geometry: g.geometry, matrix: pl.matrix, selected: p.id === selectedId,
-      snaps: snapGeo ? pl.snapCells.map(([c, r]) => snapMatrix(c, r)) : [], snapGeometry: snapGeo?.geometry });
+      snaps: snapGeo ? pl.snapCells.map(([c, r]) => snapMatrix(c, r)) : [], snapGeometry: snapGeo?.geometry,
+      connectors: connectorGeo ? pl.snapCells.map(([c, r]) => connectorMatrix(c, r)) : [], connectorGeometry: connectorGeo?.geometry });
   });
   if (dropped.length) {
     placed = placed.filter((p) => !dropped.includes(p));
@@ -471,7 +482,7 @@ function renderPartList() {
   }
   const n = placed.length;
   const snaps = placed.reduce((s, p) => { const g = partGeo.get(partKey(p.type, p.params)); return s + (g ? slotCount(g.box) : 1); }, 0);
-  $("partsSummary").textContent = n ? `${n} part${n > 1 ? "s" : ""}, ${snaps} snap${snaps !== 1 ? "s" : ""}` : "no parts placed";
+  $("partsSummary").textContent = n ? `${n} part${n > 1 ? "s" : ""}, ${snaps} snap${snaps !== 1 ? "s" : ""} + connector${snaps !== 1 ? "s" : ""}` : "no parts placed";
   $("printParts").disabled = n === 0;
 }
 function selectPart(id) {
@@ -574,7 +585,7 @@ viewer.on("emptyclick", () => { if (selectedId != null) selectPart(null); });
 // ---- print parts --------------------------------------------------------------
 $("printParts").onclick = async () => {
   const btn = $("printParts");
-  if (!snapGeo) { setStatus("Snap model is still loading — try again in a moment", true); return; }
+  if (!snapGeo || !connectorGeo) { setStatus("Snap/connector models are still loading — try again in a moment", true); return; }
   btn.disabled = true;
   setStatus("Preparing parts plate…");
   try {
@@ -586,13 +597,16 @@ $("printParts").onclick = async () => {
       return { ...m, name: def.name, settings: { ...PRINT_DEFAULTS, ...(def.print || {}) } };
     });
     const snaps = geos.reduce((n, g) => n + slotCount(g.box), 0);
-    for (let i = 0; i < snaps; i++) items.push({ pos: snapGeo.pos, box: snapGeo.box, name: "Multiconnect snap", settings: PRINT_SNAP });
+    for (let i = 0; i < snaps; i++) {
+      items.push({ pos: snapGeo.pos, box: snapGeo.box, name: "Multiconnect snap", settings: PRINT_SNAP });
+      items.push({ pos: connectorGeo.pos, box: connectorGeo.box, name: "Multiconnect connector", settings: PRINT_SNAP });
+    }
     const plates = packPlates(items, printer.bed);
     for (let i = 0; i < plates.length; i++) {
       const objects = plates[i].map((it) => ({ name: it.name, settings: it.settings, pos: transformed(it.pos, it.matrix).pos }));
       await sendToBambu(`opengrid_parts${plates.length > 1 ? `_plate${i + 1}` : ""}`, objects);
     }
-    setStatus(`Opened ${placed.length} part${placed.length > 1 ? "s" : ""} + ${snaps} snap${snaps !== 1 ? "s" : ""} in Bambu Studio (${plates.length} plate${plates.length > 1 ? "s" : ""})`);
+    setStatus(`Opened ${placed.length} part${placed.length > 1 ? "s" : ""} + ${snaps} snap${snaps !== 1 ? "s" : ""} + ${snaps} connector${snaps !== 1 ? "s" : ""} in Bambu Studio (${plates.length} plate${plates.length > 1 ? "s" : ""})`);
   } catch (err) {
     setStatus(`Parts export failed: ${err.message}`, true);
   } finally {

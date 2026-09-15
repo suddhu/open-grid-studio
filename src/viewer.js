@@ -256,11 +256,13 @@ export function createViewer(container) {
       m.matrix.copy(p.matrix);
       m.userData.partId = p.id;
       partsGroup.add(m);
-      for (const sm of p.snaps) {
-        const sn = new THREE.Mesh(p.snapGeometry, snapMaterial);
-        sn.matrixAutoUpdate = false;
-        sn.matrix.copy(sm);
-        partsGroup.add(sn);
+      for (const [geo, mats] of [[p.snapGeometry, p.snaps], [p.connectorGeometry, p.connectors ?? []]]) {
+        for (const sm of mats) {
+          const sn = new THREE.Mesh(geo, snapMaterial);
+          sn.matrixAutoUpdate = false;
+          sn.matrix.copy(sm);
+          partsGroup.add(sn);
+        }
       }
       return m;
     });

@@ -33,6 +33,7 @@ To update the generator: copy `openGrid/openGrid.scad` from QuackWorks over `sca
 `scad/parts/` holds BlackjackDuck's Multiconnect part generators (Hook, Item Holder, Shelf) from
 QuackWorks `VerticalMountingSeries/`, rendered with `Connection_Type = "Multiconnect - openGrid"`.
 Parts are placed on cells in the 3D view (click a palette button, then a cell; drag to move; Delete
-to remove) and persisted in localStorage. "Print parts" packs every placed part plus one official
-openGrid Multiconnect Snap per slot (`parts/snaps/`, from David D's Printables release) onto plates
+to remove) and persisted in localStorage. "Print parts" packs every placed part plus, per slot, one official openGrid Multiconnect Snap (the threaded
+socket that clips into a cell) and one Multiconnect connector (the threaded stud whose 20 mm head the part
+hangs on) — both in `parts/snaps/`, from David D's Printables release — onto plates
 sized for the selected printer and opens each in Bambu Studio. Placement geometry: `src/parts.js`.
