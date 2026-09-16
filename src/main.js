@@ -267,8 +267,8 @@ $("printConnectors").onclick = async () => {
   try {
     const data = await renderAux(connectorSource, ["-D", `Count=${n}`]);
     if (data.error) throw new Error(data.error);
-    await sendToBambu(`opengrid_connectors_x${n}`, [{ name: `openGrid connectors ×${n}`, pos: meshData(toArrayBuffer(data.stl)).pos, settings: PRINT_CONNECTOR }]);
-    setStatus(`Opened ${n} connectors in Bambu Studio`);
+    const r = await sendToBambu(`opengrid_connectors_x${n}`, [{ name: `openGrid connectors ×${n}`, pos: meshData(toArrayBuffer(data.stl)).pos, settings: PRINT_CONNECTOR }]);
+    setStatus(exportNote(r, `${n} connectors`));
   } catch (err) {
     setStatus(`Connector export failed: ${err.message}`, true);
   } finally {
@@ -278,23 +278,44 @@ $("printConnectors").onclick = async () => {
 };
 
 // Build a Bambu 3MF (objects carry their print settings) and hand it to Bambu Studio.
+// With the local dev server, /api/export opens it in Bambu Studio directly; on a static host
+// (GitHub Pages) there is no server, so the file is downloaded instead.
+let localServer = null; // null = unknown, then true/false
 async function sendToBambu(name, objects) {
   const file = await write3mf(objects);
-  const res = await fetch(`/api/export?name=${encodeURIComponent(name)}&ext=3mf`, {
-    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || res.statusText);
-  return body.path;
+  if (localServer !== false) {
+    try {
+      const res = await fetch(`/api/export?name=${encodeURIComponent(name)}&ext=3mf`, {
+        method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+      });
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        localServer = true;
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || res.statusText);
+        return { opened: true, path: body.path };
+      }
+      localServer = false; // static host answered (404 page, not our API)
+    } catch (err) {
+      if (localServer === true) throw err; // a real server error
+      localServer = false;
+    }
+  }
+  const url = URL.createObjectURL(new Blob([file], { type: "model/3mf" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: `${name}.3mf` });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return { opened: false, path: `${name}.3mf` };
 }
+const exportNote = (r, what) => (r.opened ? `Opened ${what} in Bambu Studio` : `Downloaded ${r.path} — open it in Bambu Studio`);
 
 $("export").onclick = async () => {
   if (!latestStl) return;
   const [W, H] = boardWH();
   setStatus("Sending board to Bambu Studio…");
   try {
-    const path = await sendToBambu(`opengrid_board_${W}x${H}`, [{ name: `openGrid board ${W}×${H}`, pos: meshData(toArrayBuffer(latestStl)).pos, settings: PRINT_BOARD }]);
-    setStatus(`Opened board in Bambu Studio (${path})`);
+    const r = await sendToBambu(`opengrid_board_${W}x${H}`, [{ name: `openGrid board ${W}×${H}`, pos: meshData(toArrayBuffer(latestStl)).pos, settings: PRINT_BOARD }]);
+    setStatus(exportNote(r, "the board"));
   } catch (err) {
     setStatus(`Export failed: ${err.message}`, true);
   }
@@ -602,11 +623,12 @@ $("printParts").onclick = async () => {
       items.push({ pos: connectorGeo.pos, box: connectorGeo.box, name: "Multiconnect connector", settings: PRINT_SNAP });
     }
     const plates = packPlates(items, printer.bed);
+    let r;
     for (let i = 0; i < plates.length; i++) {
       const objects = plates[i].map((it) => ({ name: it.name, settings: it.settings, pos: transformed(it.pos, it.matrix).pos }));
-      await sendToBambu(`opengrid_parts${plates.length > 1 ? `_plate${i + 1}` : ""}`, objects);
+      r = await sendToBambu(`opengrid_parts${plates.length > 1 ? `_plate${i + 1}` : ""}`, objects);
     }
-    setStatus(`Opened ${placed.length} part${placed.length > 1 ? "s" : ""} + ${snaps} snap${snaps !== 1 ? "s" : ""} + ${snaps} connector${snaps !== 1 ? "s" : ""} in Bambu Studio (${plates.length} plate${plates.length > 1 ? "s" : ""})`);
+    setStatus(exportNote(r, `${placed.length} part${placed.length > 1 ? "s" : ""} + ${snaps} snap${snaps !== 1 ? "s" : ""} + ${snaps} connector${snaps !== 1 ? "s" : ""} (${plates.length} plate${plates.length > 1 ? "s" : ""})`));
   } catch (err) {
     setStatus(`Parts export failed: ${err.message}`, true);
   } finally {
